@@ -61,6 +61,13 @@
         </label>
       </div>
 
+      <label class="field">
+        <span>Categoria</span>
+        <input id="category" type="text" list="categoryList" autocomplete="off"
+               placeholder="Scegli o crea una categoria" />
+        <datalist id="categoryList"></datalist>
+      </label>
+
       <button id="startBtn" class="btn-primary" disabled>Avvia trascrizione</button>
 
       <div class="divider"><span>oppure</span></div>
@@ -95,6 +102,13 @@
             <a class="dl" data-fmt="vtt">VTT</a>
             <a class="dl" data-fmt="json">JSON</a>
           </div>
+        </div>
+
+        <div id="categoryEditor" class="category-editor hidden">
+          <span class="ce-label">🏷️ Categoria</span>
+          <input id="jobCategory" type="text" list="categoryList" autocomplete="off"
+                 placeholder="Nessuna categoria" />
+          <button id="saveCategoryBtn" class="ce-save">Salva</button>
         </div>
 
         <div id="progressWrap" class="progress-wrap">

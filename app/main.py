@@ -58,6 +58,12 @@ def _normalize_options(num_speakers: object, language: object) -> tuple[int | No
     return speakers, lang
 
 
+def _normalize_category(category: object) -> str | None:
+    """Trim a category label; blank selections become ``None``."""
+    label = str(category).strip() if category not in (None, "") else ""
+    return label or None
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index() -> HTMLResponse:
     return HTMLResponse((STATIC_DIR / "index.html").read_text(encoding="utf-8"))
@@ -68,6 +74,7 @@ async def create_job(
     file: UploadFile = File(...),
     num_speakers: int | None = Form(None),
     language: str | None = Form(None),
+    category: str | None = Form(None),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Nessun file fornito.")
@@ -95,6 +102,7 @@ async def create_job(
         created_at=now(),
         requested_speakers=speakers,
         requested_language=lang,
+        category=_normalize_category(category),
     )
     store.add(job)
     worker.enqueue(job.id)
@@ -118,10 +126,17 @@ async def create_youtube_job(payload: dict = Body(...)) -> dict:
         source_url=url,
         requested_speakers=speakers,
         requested_language=lang,
+        category=_normalize_category(payload.get("category")),
     )
     store.add(job)
     worker.enqueue(job.id)
     return job.public_dict()
+
+
+@app.get("/api/categories")
+async def list_categories() -> list[str]:
+    """Distinct category labels already used, for the group-by picker."""
+    return store.categories()
 
 
 @app.get("/api/jobs")
@@ -184,6 +199,17 @@ async def rename_speakers(job_id: str, names: dict[str, str] = Body(...)) -> dic
         if canonical in valid and name and name.strip() and name.strip() != canonical
     }
     job.speaker_names = cleaned
+    store.save(job)
+    return job.public_dict()
+
+
+@app.patch("/api/jobs/{job_id}/category")
+async def set_category(job_id: str, payload: dict = Body(...)) -> dict:
+    """Set (or clear) the grouping category of an existing job."""
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato.")
+    job.category = _normalize_category(payload.get("category"))
     store.save(job)
     return job.public_dict()
 

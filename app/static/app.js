@@ -32,6 +32,11 @@ const speakerFields = $("speakerFields");
 const saveNamesBtn = $("saveNamesBtn");
 const ytUrl = $("ytUrl");
 const ytBtn = $("ytBtn");
+const categoryInput = $("category");
+const categoryList = $("categoryList");
+const categoryEditor = $("categoryEditor");
+const jobCategory = $("jobCategory");
+const saveCategoryBtn = $("saveCategoryBtn");
 
 // ---- File selection ----
 function pickFile(file) {
@@ -71,6 +76,7 @@ startBtn.addEventListener("click", async () => {
   form.append("file", selectedFile);
   form.append("language", $("language").value);
   form.append("num_speakers", $("numSpeakers").value);
+  form.append("category", categoryInput.value.trim());
 
   try {
     const res = await fetch("/api/jobs", { method: "POST", body: form });
@@ -83,6 +89,7 @@ startBtn.addEventListener("click", async () => {
     showJob(job);
     startPolling(job.id);
     loadHistory();
+    loadCategories();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -113,6 +120,7 @@ ytBtn.addEventListener("click", async () => {
         url,
         language: $("language").value,
         num_speakers: $("numSpeakers").value,
+        category: categoryInput.value.trim(),
       }),
     });
     if (!res.ok) {
@@ -124,6 +132,7 @@ ytBtn.addEventListener("click", async () => {
     showJob(job);
     startPolling(job.id);
     loadHistory();
+    loadCategories();
   } catch (err) {
     alert(err.message);
   } finally {
@@ -167,6 +176,10 @@ function showJob(job) {
   if (job.detected_language) jobMeta.appendChild(chip(`🌐 ${job.detected_language.toUpperCase()}`));
   if (job.speaker_count) jobMeta.appendChild(chip(`👥 ${job.speaker_count} parlanti`));
   if (job.duration) jobMeta.appendChild(chip(`⏱️ ${formatDuration(job.duration)}`));
+
+  categoryEditor.classList.remove("hidden");
+  // Don't clobber the field while the user is typing (showJob runs on each poll).
+  if (document.activeElement !== jobCategory) jobCategory.value = job.category || "";
 
   const running = job.status === "queued" || job.status === "processing";
   progressWrap.classList.toggle("hidden", !running);
@@ -258,6 +271,32 @@ saveNamesBtn.addEventListener("click", async () => {
   }
 });
 
+saveCategoryBtn.addEventListener("click", async () => {
+  if (!currentJob) return;
+  saveCategoryBtn.disabled = true;
+  saveCategoryBtn.textContent = "Salvataggio…";
+  try {
+    const res = await fetch(`/api/jobs/${currentJob.id}/category`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ category: jobCategory.value.trim() }),
+    });
+    if (!res.ok) throw new Error("Errore nel salvataggio della categoria");
+    showJob(await res.json());
+    loadHistory();
+    loadCategories();
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    saveCategoryBtn.disabled = false;
+    saveCategoryBtn.textContent = "Salva";
+  }
+});
+
+jobCategory.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); saveCategoryBtn.click(); }
+});
+
 function renderTranscript(segments) {
   const speakers = [...new Set(segments.map((s) => s.speaker).filter(Boolean))];
   const colorOf = (sp) =>
@@ -316,7 +355,7 @@ async function loadHistory() {
         <span class="dot ${job.status}"></span>
         <div style="min-width:0">
           <div class="hi-name">${escapeHtml(job.filename)}</div>
-          <div class="hi-status">${statusLabel(job)}</div>
+          <div class="hi-status">${job.category ? "🏷️ " + escapeHtml(job.category) + " · " : ""}${statusLabel(job)}</div>
         </div>
       </div>
       <button class="hi-del" title="Elimina">✕</button>`;
@@ -334,6 +373,19 @@ async function loadHistory() {
       loadHistory();
     });
     historyList.appendChild(li);
+  }
+}
+
+// ---- Categories ----
+async function loadCategories() {
+  const res = await fetch("/api/categories");
+  if (!res.ok) return;
+  const categories = await res.json();
+  categoryList.innerHTML = "";
+  for (const name of categories) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    categoryList.appendChild(opt);
   }
 }
 
@@ -389,3 +441,4 @@ function escapeHtml(str) {
 
 // ---- Init ----
 loadHistory();
+loadCategories();

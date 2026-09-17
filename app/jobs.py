@@ -42,6 +42,7 @@ _SCALAR_COLUMNS = (
     "speaker_count",
     "duration",
     "error",
+    "category",
 )
 _JSON_COLUMNS = ("speaker_names", "segments")
 _ALL_COLUMNS = _SCALAR_COLUMNS + _JSON_COLUMNS
@@ -56,6 +57,7 @@ _ARCHIVE_COLUMNS = (
     "detected_language",
     "duration",
     "speaker_count",
+    "category",
 )
 
 _UPSERT_SQL = (
@@ -80,6 +82,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     speaker_count INTEGER,
     duration REAL,
     error TEXT,
+    category TEXT,
     speaker_names TEXT NOT NULL DEFAULT '{}',
     segments TEXT NOT NULL DEFAULT '[]'
 )
@@ -102,6 +105,13 @@ class JobStore:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute(_SCHEMA_SQL)
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """Add columns introduced after a database was first created."""
+        existing = {row["name"] for row in self._db.execute("PRAGMA table_info(jobs)")}
+        if "category" not in existing:
+            self._db.execute("ALTER TABLE jobs ADD COLUMN category TEXT")
 
     # ---- Row <-> Job conversion ---------------------------------------
     @staticmethod
@@ -159,6 +169,16 @@ class JobStore:
                 (JobStatus.COMPLETED.value,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def categories(self) -> list[str]:
+        """Distinct, non-empty category labels already in use, alphabetically."""
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT DISTINCT category FROM jobs "
+                "WHERE category IS NOT NULL AND category != '' "
+                "ORDER BY category COLLATE NOCASE"
+            ).fetchall()
+        return [row["category"] for row in rows]
 
     def delete(self, job_id: str) -> bool:
         with self._lock:

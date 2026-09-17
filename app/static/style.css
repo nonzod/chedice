@@ -89,17 +89,22 @@ body {
   margin: 20px 0;
 }
 .field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--muted); }
-.field select {
+.field select,
+.field input {
   appearance: none;
+  width: 100%;
   background: var(--panel-2);
   color: var(--text);
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 14px;
-  cursor: pointer;
+  font-family: inherit;
 }
-.field select:focus-visible { outline: 2px solid var(--accent); }
+.field select { cursor: pointer; }
+.field input::placeholder { color: var(--muted); opacity: 0.7; }
+.field select:focus-visible,
+.field input:focus-visible { outline: 2px solid var(--accent); }
 
 /* ---- Buttons ---- */
 .btn-primary {
@@ -149,17 +154,6 @@ body {
   height: 1px;
   background: var(--border);
 }
-
-#ytUrl {
-  width: 100%;
-  background: var(--panel-2);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px 12px;
-  font-size: 14px;
-}
-#ytUrl:focus-visible { outline: 2px solid var(--accent); }
 
 /* ---- Result panel ---- */
 .result-panel { min-height: 420px; display: flex; }
@@ -225,6 +219,45 @@ body {
   transition: width 0.4s ease;
 }
 .stage-label { margin: 10px 0 0; font-size: 13px; color: var(--muted); }
+
+/* ---- Category editor ---- */
+.category-editor {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 4px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.category-editor .ce-label { flex: 0 0 auto; font-weight: 600; white-space: nowrap; }
+.category-editor input {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+}
+.category-editor input::placeholder { color: var(--muted); opacity: 0.7; }
+.category-editor input:focus-visible { outline: 2px solid var(--accent); }
+.ce-save {
+  flex: 0 0 auto;
+  border: none;
+  border-radius: 9px;
+  padding: 8px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: white;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  cursor: pointer;
+  transition: filter 0.15s, opacity 0.2s;
+}
+.ce-save:hover { filter: brightness(1.08); }
+.ce-save:disabled { opacity: 0.5; cursor: default; }
 
 /* ---- Speaker editor ---- */
 .speaker-editor {

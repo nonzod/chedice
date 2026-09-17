@@ -59,6 +59,8 @@ class Job:
     duration: float | None = None
     error: str | None = None
 
+    category: str | None = None  # optional label used to group transcriptions
+
     # Optional custom labels: {"SPEAKER 1": "Marco", ...}. Applied on download.
     speaker_names: dict[str, str] = field(default_factory=dict)
 
@@ -88,6 +90,7 @@ class Job:
             speaker_count=data.get("speaker_count"),
             duration=data.get("duration"),
             error=data.get("error"),
+            category=data.get("category"),
         )
         job.speaker_names = data.get("speaker_names", {})
         job.segments = [Segment.from_dict(s) for s in data.get("segments", [])]
@@ -108,6 +111,7 @@ class Job:
             "speaker_count": self.speaker_count,
             "duration": self.duration,
             "error": self.error,
+            "category": self.category,
             "created_at": self.created_at,
             "speaker_names": self.speaker_names,
             "segments": [s.to_dict() for s in self.segments],
