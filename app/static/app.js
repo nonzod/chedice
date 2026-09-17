@@ -223,12 +223,19 @@ function buildSpeakerEditor(job) {
     speakerEditor.classList.add("hidden");
     return;
   }
+  stopSample(); // drop any player tied to the rows we're about to rebuild
   speakerFields.innerHTML = "";
   canonical.forEach((sp, i) => {
     const color = SPEAKER_COLORS[i % SPEAKER_COLORS.length];
     const value = (job.speaker_names || {})[sp] || "";
     const row = document.createElement("div");
     row.className = "se-row";
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "se-play";
+    play.textContent = "▶";
+    play.title = "Ascolta un campione di questa voce";
+    play.addEventListener("click", () => playSample(play, job.id, sp));
     const dot = document.createElement("span");
     dot.className = "dot";
     dot.style.background = color;
@@ -240,10 +247,47 @@ function buildSpeakerEditor(job) {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") saveNamesBtn.click();
     });
-    row.append(dot, input);
+    row.append(play, dot, input);
     speakerFields.appendChild(row);
   });
   speakerEditor.classList.remove("hidden");
+}
+
+// ---- Voice sample playback ----
+let sampleAudio = null;
+let sampleButton = null;
+
+function stopSample() {
+  if (sampleAudio) {
+    sampleAudio.pause();
+    sampleAudio = null;
+  }
+  if (sampleButton) {
+    sampleButton.classList.remove("playing");
+    sampleButton.textContent = "▶";
+    sampleButton = null;
+  }
+}
+
+function playSample(btn, jobId, speaker) {
+  if (sampleButton === btn) { // clicking the playing voice again stops it
+    stopSample();
+    return;
+  }
+  stopSample();
+  btn.classList.remove("error");
+  const audio = new Audio(`/api/jobs/${jobId}/sample/${encodeURIComponent(speaker)}`);
+  sampleAudio = audio;
+  sampleButton = btn;
+  btn.classList.add("playing");
+  btn.textContent = "⏸";
+  audio.addEventListener("ended", stopSample);
+  audio.addEventListener("error", () => {
+    stopSample();
+    btn.classList.add("error");
+    btn.title = "Campione non disponibile";
+  });
+  audio.play().catch(() => {}); // playback errors surface via the 'error' event
 }
 
 saveNamesBtn.addEventListener("click", async () => {

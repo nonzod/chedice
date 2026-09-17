@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -14,8 +15,8 @@ from fastapi.staticfiles import StaticFiles
 from app import utils
 from app.config import get_settings
 from app.jobs import JobStore, Worker, new_job_id, now
-from app.models import Job
-from app.pipeline import formats
+from app.models import Job, Segment
+from app.pipeline import audio, formats
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("chedice")
@@ -27,6 +28,13 @@ worker = Worker(store, settings)
 STATIC_DIR = Path(__file__).parent / "static"
 _UPLOAD_CHUNK = 1024 * 1024
 _YOUTUBE_URL = re.compile(r"^https?://(www\.|m\.|music\.)?(youtube\.com/|youtu\.be/)", re.IGNORECASE)
+_SAMPLE_MAX_SECONDS = 6.0  # longest voice sample cut for verification playback
+
+
+def _representative_segment(job: Job, speaker: str) -> Segment | None:
+    """Pick the longest segment attributed to ``speaker`` (best voice sample)."""
+    candidates = [s for s in job.segments if s.speaker == speaker and s.end > s.start]
+    return max(candidates, key=lambda s: s.end - s.start, default=None)
 
 
 @asynccontextmanager
@@ -201,6 +209,42 @@ async def rename_speakers(job_id: str, names: dict[str, str] = Body(...)) -> dic
     job.speaker_names = cleaned
     store.save(job)
     return job.public_dict()
+
+
+@app.get("/api/jobs/{job_id}/sample/{speaker}")
+async def speaker_sample(job_id: str, speaker: str) -> Response:
+    """Return a short audio clip of a representative moment for ``speaker``.
+
+    Lets the user hear each detected voice and confirm the diarization is right.
+    The clip is cut on demand from the stored source media with ffmpeg (so any
+    input format plays in the browser) and cached on disk for repeat plays.
+    """
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato.")
+
+    segment = _representative_segment(job, speaker)
+    if segment is None:
+        raise HTTPException(status_code=404, detail="Parlante non trovato.")
+
+    source = Path(job.source_path) if job.source_path else None
+    if source is None or not source.exists():
+        raise HTTPException(status_code=404, detail="Audio sorgente non più disponibile.")
+
+    cache_path = settings.uploads_dir / f"{job_id}_{utils.safe_name(speaker)}.sample.mp3"
+    if not cache_path.exists():
+        duration = min(segment.end - segment.start, _SAMPLE_MAX_SECONDS)
+        try:
+            audio.extract_clip(source, cache_path, start=segment.start, duration=duration)
+        except subprocess.CalledProcessError:
+            cache_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail="Impossibile estrarre il campione audio.")
+
+    return Response(
+        content=cache_path.read_bytes(),
+        media_type="audio/mpeg",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.patch("/api/jobs/{job_id}/category")

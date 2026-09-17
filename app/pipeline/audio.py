@@ -47,3 +47,34 @@ def extract_audio(source: Path, dest: Path, sample_rate: int = 16000) -> None:
         str(dest),
     ]
     subprocess.run(cmd, check=True, capture_output=True)
+
+
+def extract_clip(source: Path, dest: Path, *, start: float, duration: float) -> None:
+    """Cut a short MP3 clip ``[start, start + duration)`` for browser playback.
+
+    Seeking before ``-i`` makes ffmpeg jump straight to the offset, so cutting a
+    few seconds out of a long file stays fast regardless of its length.
+
+    Raises:
+        subprocess.CalledProcessError: if ffmpeg fails.
+    """
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-ss",
+        f"{max(0.0, start):.3f}",
+        "-i",
+        str(source),
+        "-t",
+        f"{max(0.1, duration):.3f}",
+        "-vn",  # drop video
+        "-ac",
+        "1",  # mono
+        "-c:a",
+        "libmp3lame",
+        "-q:a",
+        "5",
+        str(dest),
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)

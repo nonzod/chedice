@@ -190,6 +190,8 @@ class JobStore:
             Path(job.source_path).unlink(missing_ok=True)
         for ext in ("srt", "vtt", "txt", "json"):
             (self._settings.outputs_dir / f"{job_id}.{ext}").unlink(missing_ok=True)
+        for sample in self._settings.uploads_dir.glob(f"{job_id}_*.sample.mp3"):
+            sample.unlink(missing_ok=True)  # cached voice-verification clips
         return True
 
     # ---- One-time migration from the old JSON store --------------------
