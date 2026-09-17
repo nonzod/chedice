@@ -49,10 +49,15 @@ class Settings(BaseSettings):
 
     @property
     def jobs_dir(self) -> Path:
+        # Legacy JSON job store; kept only so old jobs can be migrated into SQLite.
         return self.data_dir / "jobs"
 
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "chedice.db"
+
     def ensure_dirs(self) -> None:
-        for directory in (self.uploads_dir, self.outputs_dir, self.jobs_dir):
+        for directory in (self.uploads_dir, self.outputs_dir):
             directory.mkdir(parents=True, exist_ok=True)
 
 

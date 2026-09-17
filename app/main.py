@@ -32,7 +32,7 @@ _YOUTUBE_URL = re.compile(r"^https?://(www\.|m\.|music\.)?(youtube\.com/|youtu\.
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     settings.ensure_dirs()
-    store.load_from_disk()
+    store.load()
     worker.start()
     worker.requeue_pending()
     logger.info("chedice ready — device=%s model=%s", settings.device, settings.whisper_model)
@@ -133,6 +133,22 @@ async def list_jobs() -> list[dict]:
         data.pop("segments", None)
         result.append(data)
     return result
+
+
+@app.get("/api/archive")
+async def archive() -> list[dict]:
+    """List completed transcriptions from the SQLite archive.
+
+    Reads metadata straight from the database (no transcript segments) and adds
+    a download URL per format so the archive can be browsed and exported.
+    """
+    items = []
+    for row in store.archive():
+        row["formats"] = {
+            fmt: f"/api/jobs/{row['id']}/download/{fmt}" for fmt in formats.EXTENSIONS
+        }
+        items.append(row)
+    return items
 
 
 @app.get("/api/jobs/{job_id}")

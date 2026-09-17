@@ -92,7 +92,7 @@ app/
   main.py            # FastAPI: upload, YouTube, stato, rinomina, download
   config.py          # impostazioni (env / .env)
   models.py          # Job e Segment
-  jobs.py            # store persistente + worker in background
+  jobs.py            # store persistente (SQLite) + worker in background
   utils.py           # helper condivisi (nomi file sicuri)
   pipeline/
     download.py      # download audio da URL (yt-dlp)
@@ -106,5 +106,10 @@ app/
 
 ## Note
 
-- I dati (upload, trascrizioni, metadati) vivono in `./data/` (montato nel container).
+- I dati vivono in `./data/` (montato nel container): gli upload in `./data/uploads/`,
+  mentre trascrizioni e metadati (nomefile/URL, segmenti, nomi parlanti) sono salvati in
+  un database SQLite `./data/chedice.db`. I formati SRT/VTT/TXT/JSON sono generati al volo
+  al download. Eventuali vecchi job in `./data/jobs/*.json` vengono migrati nel DB al primo avvio.
+- `GET /api/archive` elenca le trascrizioni completate leggendo direttamente dal DB (solo
+  metadati: nomefile/URL, data, lingua, durata, parlanti) con i link di download per ogni formato.
 - La diarization è **best-effort**: se fallisce, la trascrizione viene comunque salvata.

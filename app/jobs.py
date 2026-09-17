@@ -1,7 +1,11 @@
-"""In-process job store with disk persistence and a single background worker.
+"""SQLite-backed job store with a single background worker.
 
-A single worker thread processes one job at a time, which keeps GPU memory
-usage bounded (only one Whisper/ECAPA inference runs concurrently).
+Jobs (filename/URL, request options, transcript segments and speaker names) are
+persisted in one SQLite database on the ``data`` volume, so transcripts survive
+restarts. Jobs are cached in memory for fast reads; every mutation is written
+through to SQLite. A single worker thread processes one job at a time, which
+keeps GPU memory usage bounded (only one Whisper/ECAPA inference runs
+concurrently).
 """
 
 from __future__ import annotations
@@ -9,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import sqlite3
 import threading
 import time
 from pathlib import Path
@@ -19,32 +24,116 @@ from app.pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 
+# Scalar Job fields stored as their own (queryable) columns. Transcript segments
+# and speaker names are stored as JSON text alongside them.
+_SCALAR_COLUMNS = (
+    "id",
+    "filename",
+    "stem",
+    "source_path",
+    "source_url",
+    "created_at",
+    "status",
+    "progress",
+    "stage",
+    "requested_speakers",
+    "requested_language",
+    "detected_language",
+    "speaker_count",
+    "duration",
+    "error",
+)
+_JSON_COLUMNS = ("speaker_names", "segments")
+_ALL_COLUMNS = _SCALAR_COLUMNS + _JSON_COLUMNS
+
+# Columns surfaced by the archive listing (no heavy transcript segments).
+_ARCHIVE_COLUMNS = (
+    "id",
+    "filename",
+    "stem",
+    "source_url",
+    "created_at",
+    "detected_language",
+    "duration",
+    "speaker_count",
+)
+
+_UPSERT_SQL = (
+    f"INSERT OR REPLACE INTO jobs ({','.join(_ALL_COLUMNS)}) "
+    f"VALUES ({','.join(':' + c for c in _ALL_COLUMNS)})"
+)
+
+_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    stem TEXT NOT NULL,
+    source_path TEXT NOT NULL DEFAULT '',
+    source_url TEXT,
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL,
+    progress REAL NOT NULL DEFAULT 0,
+    stage TEXT,
+    requested_speakers INTEGER,
+    requested_language TEXT,
+    detected_language TEXT,
+    speaker_count INTEGER,
+    duration REAL,
+    error TEXT,
+    speaker_names TEXT NOT NULL DEFAULT '{}',
+    segments TEXT NOT NULL DEFAULT '[]'
+)
+"""
+
 
 class JobStore:
-    """Thread-safe registry of jobs, persisted as one JSON file per job."""
+    """Thread-safe registry of jobs persisted in a single SQLite database."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self._jobs: dict[str, Job] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        # The store is created at import time, before ``ensure_dirs`` runs, so
+        # make sure the volume directory exists before opening the database.
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        self._db = sqlite3.connect(
+            settings.db_path, check_same_thread=False, isolation_level=None
+        )
+        self._db.row_factory = sqlite3.Row
+        self._db.execute("PRAGMA journal_mode=WAL")
+        self._db.execute(_SCHEMA_SQL)
 
-    def load_from_disk(self) -> None:
-        for path in sorted(self._settings.jobs_dir.glob("*.json")):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                self._jobs[data["id"]] = Job.from_dict(data)
-            except (json.JSONDecodeError, KeyError):
-                logger.warning("Skipping corrupt job file: %s", path)
+    # ---- Row <-> Job conversion ---------------------------------------
+    @staticmethod
+    def _row_params(job: Job) -> dict:
+        data = job.to_dict()  # status already serialized to its string value
+        data["speaker_names"] = json.dumps(job.speaker_names, ensure_ascii=False)
+        data["segments"] = json.dumps([s.to_dict() for s in job.segments], ensure_ascii=False)
+        return {col: data.get(col) for col in _ALL_COLUMNS}
 
-    def _path(self, job_id: str) -> Path:
-        return self._settings.jobs_dir / f"{job_id}.json"
+    @staticmethod
+    def _from_row(row: sqlite3.Row) -> Job:
+        data = dict(row)
+        data["speaker_names"] = json.loads(data.get("speaker_names") or "{}")
+        data["segments"] = json.loads(data.get("segments") or "[]")
+        return Job.from_dict(data)
+
+    def _upsert(self, job: Job) -> None:
+        self._db.execute(_UPSERT_SQL, self._row_params(job))
+
+    # ---- Public API ----------------------------------------------------
+    def load(self) -> None:
+        """Load all jobs from SQLite, importing any legacy JSON store first."""
+        with self._lock:
+            self._migrate_legacy_json()
+            for row in self._db.execute("SELECT * FROM jobs"):
+                job = self._from_row(row)
+                self._jobs[job.id] = job
 
     def save(self, job: Job) -> None:
         with self._lock:
             self._jobs[job.id] = job
-            tmp = self._path(job.id).with_suffix(".json.tmp")
-            tmp.write_text(json.dumps(job.to_dict(), ensure_ascii=False), encoding="utf-8")
-            tmp.replace(self._path(job.id))
+            self._upsert(job)
 
     def add(self, job: Job) -> None:
         self.save(job)
@@ -57,17 +146,49 @@ class JobStore:
         with self._lock:
             return sorted(self._jobs.values(), key=lambda j: j.created_at, reverse=True)
 
+    def archive(self) -> list[dict]:
+        """Completed transcriptions read straight from SQLite (metadata only).
+
+        Projects just the columns needed to browse and download the archive, so
+        the (potentially large) transcript segments are never loaded.
+        """
+        cols = ",".join(_ARCHIVE_COLUMNS)
+        with self._lock:
+            rows = self._db.execute(
+                f"SELECT {cols} FROM jobs WHERE status = ? ORDER BY created_at DESC",
+                (JobStatus.COMPLETED.value,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def delete(self, job_id: str) -> bool:
         with self._lock:
             job = self._jobs.pop(job_id, None)
             if job is None:
                 return False
-        self._path(job_id).unlink(missing_ok=True)
+            self._db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         if job.source_path:  # empty for a YouTube job not yet downloaded
             Path(job.source_path).unlink(missing_ok=True)
         for ext in ("srt", "vtt", "txt", "json"):
             (self._settings.outputs_dir / f"{job_id}.{ext}").unlink(missing_ok=True)
         return True
+
+    # ---- One-time migration from the old JSON store --------------------
+    def _migrate_legacy_json(self) -> None:
+        legacy = self._settings.jobs_dir
+        if not legacy.exists():
+            return
+        if self._db.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]:
+            return  # database already populated; nothing to migrate
+        imported = 0
+        for path in sorted(legacy.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                self._upsert(Job.from_dict(data))
+                imported += 1
+            except (json.JSONDecodeError, KeyError, OSError):
+                logger.warning("Skipping corrupt legacy job file: %s", path)
+        if imported:
+            logger.info("Migrated %d legacy job(s) from JSON into SQLite", imported)
 
 
 class Worker:
