@@ -1,0 +1,14 @@
+# Runtime data (uploads, generated transcripts, job metadata)
+data/
+
+# Local environment overrides
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/

@@ -1,0 +1,25 @@
+services:
+  app:
+    build: .
+    container_name: chedice
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      # Uploaded videos + generated transcripts.
+      - ./data:/app/data
+      # Cached models (Whisper large-v3 + ECAPA) so they download only once.
+      - model-cache:/cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  model-cache:

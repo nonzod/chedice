@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>chedice · trascrizione video</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎙️</text></svg>" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">🎙️</span>
+      <div>
+        <h1>chedice</h1>
+        <p class="tagline">Trascrizione video con riconoscimento dei parlanti</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Left: upload + options -->
+    <section class="panel upload-panel">
+      <div id="dropzone" class="dropzone" tabindex="0" role="button"
+           aria-label="Carica un video">
+        <input id="fileInput" type="file" accept="video/*,audio/*" hidden />
+        <div class="dz-inner">
+          <div class="dz-icon">⬆️</div>
+          <p class="dz-title">Trascina qui un video</p>
+          <p class="dz-sub">oppure <span class="link">scegli un file</span></p>
+          <p id="fileName" class="dz-file"></p>
+        </div>
+      </div>
+
+      <div class="options">
+        <label class="field">
+          <span>Lingua</span>
+          <select id="language">
+            <option value="auto">Rilevamento automatico</option>
+            <option value="it">Italiano</option>
+            <option value="en">Inglese</option>
+            <option value="es">Spagnolo</option>
+            <option value="fr">Francese</option>
+            <option value="de">Tedesco</option>
+            <option value="pt">Portoghese</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span>Numero di parlanti</span>
+          <select id="numSpeakers">
+            <option value="0">Automatico</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+          </select>
+        </label>
+      </div>
+
+      <button id="startBtn" class="btn-primary" disabled>Avvia trascrizione</button>
+
+      <div class="divider"><span>oppure</span></div>
+
+      <label class="field">
+        <span>Link YouTube</span>
+        <input id="ytUrl" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+      </label>
+      <button id="ytBtn" class="btn-secondary">▶️ Trascrivi da YouTube</button>
+
+      <p class="hint">Il modello <strong>large-v3</strong> gira sulla tua GPU. Il primo
+        avvio scarica i modelli (qualche minuto), poi tutto resta in cache. Usa i video
+        YouTube solo se ne hai i diritti.</p>
+    </section>
+
+    <!-- Right: current job + history -->
+    <section class="panel result-panel">
+      <div id="empty" class="empty-state">
+        <div class="empty-icon">✨</div>
+        <p>Carica un video per iniziare.<br />La trascrizione apparirà qui.</p>
+      </div>
+
+      <div id="jobView" class="job-view hidden">
+        <div class="job-head">
+          <div class="job-title-wrap">
+            <h2 id="jobTitle"></h2>
+            <div id="jobMeta" class="job-meta"></div>
+          </div>
+          <div id="downloads" class="downloads hidden">
+            <a class="dl" data-fmt="txt">TXT</a>
+            <a class="dl" data-fmt="srt">SRT</a>
+            <a class="dl" data-fmt="vtt">VTT</a>
+            <a class="dl" data-fmt="json">JSON</a>
+          </div>
+        </div>
+
+        <div id="progressWrap" class="progress-wrap">
+          <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
+          <p id="stageLabel" class="stage-label"></p>
+        </div>
+
+        <div id="speakerEditor" class="speaker-editor hidden">
+          <div class="se-head">
+            <span>✏️ Rinomina parlanti</span>
+            <button id="saveNamesBtn" class="se-save">Salva nomi</button>
+          </div>
+          <div id="speakerFields" class="speaker-fields"></div>
+        </div>
+
+        <div id="transcript" class="transcript"></div>
+      </div>
+    </section>
+  </main>
+
+  <aside class="history-panel">
+    <h3>Recenti</h3>
+    <ul id="historyList" class="history-list"></ul>
+  </aside>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

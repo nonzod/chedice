@@ -1,0 +1,24 @@
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+pydantic-settings==2.7.1
+
+# Speech-to-text (GPU via CTranslate2 / cuDNN 9)
+faster-whisper==1.1.1
+
+# YouTube (and other sites) audio download. Floor pin only: YouTube changes often,
+# so newer yt-dlp releases are preferred — bump periodically if downloads break.
+yt-dlp>=2024.12.13
+
+# Speaker embeddings for token-free diarization
+speechbrain==1.0.2
+scikit-learn==1.6.1
+numpy==1.26.4
+requests==2.32.3  # used by speechbrain/huggingface_hub but not declared by them
+# Pinned: speechbrain 1.0.2 still calls hf_hub_download(use_auth_token=...),
+# removed in huggingface_hub >= 0.28. Also compatible with faster-whisper 1.1.1.
+huggingface_hub==0.25.2
+
+# NOTE: torch / torchaudio (CUDA 12.4 build) are installed separately in the
+# Dockerfile from the PyTorch index, because they are not on PyPI with CUDA wheels.
