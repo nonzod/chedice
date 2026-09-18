@@ -39,6 +39,11 @@ class Settings(BaseSettings):
     max_upload_mb: int = 4096
     sample_rate: int = 16000  # Whisper/ECAPA both expect 16 kHz mono
 
+    # --- LLM assistant ---
+    # Read timeout (seconds) for the streamed LLM response, applied between
+    # chunks. Raise it if a slow local model stalls on cold-start model load.
+    llm_request_timeout: int = 300
+
     @property
     def uploads_dir(self) -> Path:
         return self.data_dir / "uploads"

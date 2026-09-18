@@ -44,7 +44,7 @@ _SCALAR_COLUMNS = (
     "error",
     "category",
 )
-_JSON_COLUMNS = ("speaker_names", "segments")
+_JSON_COLUMNS = ("speaker_names", "segments", "ai_messages")
 _ALL_COLUMNS = _SCALAR_COLUMNS + _JSON_COLUMNS
 
 # Columns surfaced by the archive listing (no heavy transcript segments).
@@ -84,7 +84,16 @@ CREATE TABLE IF NOT EXISTS jobs (
     error TEXT,
     category TEXT,
     speaker_names TEXT NOT NULL DEFAULT '{}',
-    segments TEXT NOT NULL DEFAULT '[]'
+    segments TEXT NOT NULL DEFAULT '[]',
+    ai_messages TEXT NOT NULL DEFAULT '[]'
+)
+"""
+
+# Key/value store for runtime app configuration (e.g. the LLM connection).
+_SETTINGS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
 )
 """
 
@@ -105,6 +114,7 @@ class JobStore:
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute(_SCHEMA_SQL)
+        self._db.execute(_SETTINGS_SCHEMA_SQL)
         self._migrate_schema()
 
     def _migrate_schema(self) -> None:
@@ -112,6 +122,10 @@ class JobStore:
         existing = {row["name"] for row in self._db.execute("PRAGMA table_info(jobs)")}
         if "category" not in existing:
             self._db.execute("ALTER TABLE jobs ADD COLUMN category TEXT")
+        if "ai_messages" not in existing:
+            self._db.execute(
+                "ALTER TABLE jobs ADD COLUMN ai_messages TEXT NOT NULL DEFAULT '[]'"
+            )
 
     # ---- Row <-> Job conversion ---------------------------------------
     @staticmethod
@@ -119,6 +133,7 @@ class JobStore:
         data = job.to_dict()  # status already serialized to its string value
         data["speaker_names"] = json.dumps(job.speaker_names, ensure_ascii=False)
         data["segments"] = json.dumps([s.to_dict() for s in job.segments], ensure_ascii=False)
+        data["ai_messages"] = json.dumps(job.ai_messages, ensure_ascii=False)
         return {col: data.get(col) for col in _ALL_COLUMNS}
 
     @staticmethod
@@ -126,6 +141,7 @@ class JobStore:
         data = dict(row)
         data["speaker_names"] = json.loads(data.get("speaker_names") or "{}")
         data["segments"] = json.loads(data.get("segments") or "[]")
+        data["ai_messages"] = json.loads(data.get("ai_messages") or "[]")
         return Job.from_dict(data)
 
     def _upsert(self, job: Job) -> None:
@@ -179,6 +195,21 @@ class JobStore:
                 "ORDER BY category COLLATE NOCASE"
             ).fetchall()
         return [row["category"] for row in rows]
+
+    # ---- Runtime app configuration (key/value) -------------------------
+    def get_config(self) -> dict[str, str]:
+        """Return all persisted app settings as a plain ``{key: value}`` dict."""
+        with self._lock:
+            rows = self._db.execute("SELECT key, value FROM app_settings").fetchall()
+        return {row["key"]: row["value"] for row in rows}
+
+    def set_config(self, values: dict[str, str]) -> None:
+        """Upsert the given settings; ``None`` values are stored as empty strings."""
+        with self._lock:
+            self._db.executemany(
+                "INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                [(key, "" if value is None else str(value)) for key, value in values.items()],
+            )
 
     def delete(self, job_id: str) -> bool:
         with self._lock:

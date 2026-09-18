@@ -3,6 +3,12 @@
 Elenco dei possibili miglioramenti futuri. In cima quelli più utili/richiesti.
 
 ## ✅ Fatto
+- [x] **Assistente AI (LLM)** — maschera di configurazione ⚙️ per collegare un modello
+      via API OpenAI-compatibile (OpenRouter / Ollama remoto), salvata in SQLite
+      (`app_settings`). Box "Chiedi all'AI" sotto la trascrizione: prompt libero o
+      preset (riassunto, punti chiave, to-do); la trascrizione è passata come contesto
+      e lo scambio Q&A è persistito nel job. Endpoint `GET/PUT /api/config`,
+      `POST /api/jobs/{id}/ask`.
 - [x] Rinomina dei parlanti prima del download (mappa `SPEAKER N → nome`, applicata
       al volo su TXT/SRT/VTT/JSON).
 - [x] **Trascrizione da URL YouTube** — endpoint `POST /api/jobs/youtube`, download

@@ -17,6 +17,7 @@
         <p class="tagline">Trascrizione video con riconoscimento dei parlanti</p>
       </div>
     </div>
+    <button id="settingsBtn" class="settings-btn" title="Impostazioni" aria-label="Impostazioni">⚙️</button>
   </header>
 
   <main class="layout">
@@ -125,6 +126,26 @@
         </div>
 
         <div id="transcript" class="transcript"></div>
+
+        <div id="aiPanel" class="ai-panel hidden">
+          <div class="ai-head">
+            <span>🤖 Chiedi all'AI</span>
+            <span id="aiConfigHint" class="ai-config-hint hidden">
+              Modello non configurato · <button type="button" class="link" id="aiOpenSettings">imposta ⚙️</button>
+            </span>
+          </div>
+          <div id="aiHistory" class="ai-history"></div>
+          <div class="ai-presets">
+            <button type="button" class="ai-preset" data-prompt="Fammi un riassunto conciso del testo.">Riassunto</button>
+            <button type="button" class="ai-preset" data-prompt="Elenca i punti chiave del testo in forma di elenco puntato.">Punti chiave</button>
+            <button type="button" class="ai-preset" data-prompt="Elenca le azioni da fare (to-do) emerse dal testo.">To-do</button>
+          </div>
+          <div class="ai-input-row">
+            <textarea id="aiPrompt" rows="2"
+                      placeholder="Es. «Cosa afferma Marco nel video?» oppure «Fammi un riassunto»"></textarea>
+            <button id="aiSendBtn" class="btn-primary ai-send">Invia</button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -133,6 +154,51 @@
     <h3>Recenti</h3>
     <ul id="historyList" class="history-list"></ul>
   </aside>
+
+  <!-- Settings modal: LLM configuration -->
+  <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+    <div class="modal-card">
+      <div class="modal-head">
+        <h2 id="settingsTitle">⚙️ Impostazioni LLM</h2>
+        <button id="settingsClose" class="modal-close" aria-label="Chiudi">✕</button>
+      </div>
+      <p class="modal-sub">Collega un modello via API OpenAI-compatibile (OpenRouter,
+        Ollama remoto, ecc.) per generare riassunti e rispondere a domande sul testo.</p>
+
+      <label class="switch-field">
+        <input id="llmEnabled" type="checkbox" />
+        <span>Abilita il modello LLM</span>
+      </label>
+
+      <label class="field">
+        <span>Base URL</span>
+        <input id="llmBaseUrl" type="text" autocomplete="off" spellcheck="false"
+               placeholder="https://openrouter.ai/api/v1" />
+      </label>
+
+      <label class="field">
+        <span>API key</span>
+        <input id="llmApiKey" type="password" autocomplete="off"
+               placeholder="sk-… (vuoto per Ollama locale)" />
+      </label>
+
+      <label class="field">
+        <span>Modello</span>
+        <input id="llmModel" type="text" autocomplete="off" spellcheck="false"
+               placeholder="es. openai/gpt-4o-mini oppure llama3.1" />
+      </label>
+
+      <label class="field">
+        <span>Temperatura</span>
+        <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
+      </label>
+
+      <div class="modal-actions">
+        <span id="settingsStatus" class="settings-status"></span>
+        <button id="settingsSave" class="btn-primary">Salva</button>
+      </div>
+    </div>
+  </div>
 
   <script src="/static/app.js"></script>
 </body>

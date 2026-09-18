@@ -37,6 +37,27 @@ const categoryList = $("categoryList");
 const categoryEditor = $("categoryEditor");
 const jobCategory = $("jobCategory");
 const saveCategoryBtn = $("saveCategoryBtn");
+// Settings modal
+const settingsBtn = $("settingsBtn");
+const settingsModal = $("settingsModal");
+const settingsClose = $("settingsClose");
+const settingsSave = $("settingsSave");
+const settingsStatus = $("settingsStatus");
+const llmEnabled = $("llmEnabled");
+const llmBaseUrl = $("llmBaseUrl");
+const llmApiKey = $("llmApiKey");
+const llmModel = $("llmModel");
+const llmTemperature = $("llmTemperature");
+// AI panel
+const aiPanel = $("aiPanel");
+const aiHistory = $("aiHistory");
+const aiPrompt = $("aiPrompt");
+const aiSendBtn = $("aiSendBtn");
+const aiConfigHint = $("aiConfigHint");
+const aiOpenSettings = $("aiOpenSettings");
+
+// Whether an LLM is configured & enabled (drives the AI panel hint).
+let llmReady = false;
 
 // ---- File selection ----
 function pickFile(file) {
@@ -205,6 +226,15 @@ function showJob(job) {
     renderTranscript(job.segments);
   } else {
     transcriptEl.innerHTML = "";
+  }
+
+  // AI panel: available only once a transcript exists.
+  if (done && job.segments && job.segments.length) {
+    aiPanel.classList.remove("hidden");
+    renderAiHistory(job.ai_messages || []);
+    aiConfigHint.classList.toggle("hidden", llmReady);
+  } else {
+    aiPanel.classList.add("hidden");
   }
 }
 
@@ -483,6 +513,161 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// ---- AI: ask about the transcript ----
+function renderAiHistory(messages) {
+  aiHistory.innerHTML = "";
+  for (const m of messages) {
+    const item = document.createElement("div");
+    item.className = "ai-item";
+    item.innerHTML = `
+      <div class="ai-q">🙋 ${escapeHtml(m.prompt)}</div>
+      <div class="ai-a">${escapeHtml(m.answer)}</div>`;
+    aiHistory.appendChild(item);
+  }
+  aiHistory.scrollTop = aiHistory.scrollHeight;
+}
+
+async function sendAiPrompt(prompt) {
+  if (!currentJob || !prompt.trim()) return;
+  const jobId = currentJob.id;
+  aiSendBtn.disabled = true;
+  aiPrompt.disabled = true;
+  const original = aiSendBtn.textContent;
+  aiSendBtn.textContent = "Sto pensando…";
+
+  // Placeholder that we fill in as tokens stream in.
+  const pending = document.createElement("div");
+  pending.className = "ai-item";
+  pending.innerHTML = `
+    <div class="ai-q">🙋 ${escapeHtml(prompt)}</div>
+    <div class="ai-a ai-pending">…</div>`;
+  aiHistory.appendChild(pending);
+  aiHistory.scrollTop = aiHistory.scrollHeight;
+  const answerEl = pending.querySelector(".ai-a");
+
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/ask`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!res.ok || !res.body) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || "Errore nella richiesta all'AI");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let answer = "";
+    let firstChunk = true;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      answer += decoder.decode(value, { stream: true });
+      if (firstChunk) { answerEl.classList.remove("ai-pending"); firstChunk = false; }
+      answerEl.textContent = answer;
+      aiHistory.scrollTop = aiHistory.scrollHeight;
+    }
+    answer += decoder.decode(); // flush any trailing bytes
+    answerEl.textContent = answer;
+
+    if (!answer.trim()) {
+      answerEl.innerHTML = `<span class="ai-error">Il modello non ha restituito testo.</span>`;
+    } else {
+      // Keep local state in sync so re-renders (poll/reopen) show this exchange.
+      const entry = { prompt, answer, created_at: Date.now() / 1000 };
+      currentJob.ai_messages = [...(currentJob.ai_messages || []), entry];
+      aiPrompt.value = "";
+    }
+  } catch (err) {
+    answerEl.classList.remove("ai-pending");
+    answerEl.innerHTML = `<span class="ai-error">❌ ${escapeHtml(err.message)}</span>`;
+  } finally {
+    aiSendBtn.disabled = false;
+    aiPrompt.disabled = false;
+    aiSendBtn.textContent = original;
+  }
+}
+
+aiSendBtn.addEventListener("click", () => sendAiPrompt(aiPrompt.value));
+aiPrompt.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    sendAiPrompt(aiPrompt.value);
+  }
+});
+document.querySelectorAll(".ai-preset").forEach((btn) =>
+  btn.addEventListener("click", () => sendAiPrompt(btn.dataset.prompt))
+);
+aiOpenSettings.addEventListener("click", openSettings);
+
+// ---- Settings modal (LLM configuration) ----
+async function loadConfig() {
+  try {
+    const res = await fetch("/api/config");
+    if (!res.ok) return;
+    const cfg = await res.json();
+    llmEnabled.checked = !!cfg.enabled;
+    llmBaseUrl.value = cfg.base_url || "";
+    llmApiKey.value = cfg.api_key || "";
+    llmModel.value = cfg.model || "";
+    llmTemperature.value = cfg.temperature != null ? cfg.temperature : 0.3;
+    llmReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    if (!aiPanel.classList.contains("hidden")) {
+      aiConfigHint.classList.toggle("hidden", llmReady);
+    }
+  } catch (_) { /* keep defaults */ }
+}
+
+function openSettings() {
+  settingsStatus.textContent = "";
+  settingsModal.classList.remove("hidden");
+  loadConfig();
+}
+function closeSettings() {
+  settingsModal.classList.add("hidden");
+}
+
+settingsBtn.addEventListener("click", openSettings);
+settingsClose.addEventListener("click", closeSettings);
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettings();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsModal.classList.contains("hidden")) closeSettings();
+});
+
+settingsSave.addEventListener("click", async () => {
+  settingsSave.disabled = true;
+  settingsStatus.textContent = "Salvataggio…";
+  try {
+    const res = await fetch("/api/config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: llmEnabled.checked,
+        base_url: llmBaseUrl.value.trim(),
+        api_key: llmApiKey.value.trim(),
+        model: llmModel.value.trim(),
+        temperature: parseFloat(llmTemperature.value) || 0.3,
+      }),
+    });
+    const cfg = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(cfg.detail || "Errore nel salvataggio");
+    llmReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    if (!aiPanel.classList.contains("hidden")) {
+      aiConfigHint.classList.toggle("hidden", llmReady);
+    }
+    settingsStatus.textContent = "✅ Salvato";
+    setTimeout(closeSettings, 700);
+  } catch (err) {
+    settingsStatus.textContent = "❌ " + err.message;
+  } finally {
+    settingsSave.disabled = false;
+  }
+});
+
 // ---- Init ----
 loadHistory();
 loadCategories();
+loadConfig();

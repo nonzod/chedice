@@ -8,9 +8,7 @@ services:
       - path: .env
         required: false
     volumes:
-      # Uploaded videos + generated transcripts.
       - ./data:/app/data
-      # Cached models (Whisper large-v3 + ECAPA) so they download only once.
       - model-cache:/cache
     deploy:
       resources:
@@ -19,7 +17,7 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    restart: unless-stopped
+    restart: never
 
 volumes:
   model-cache:

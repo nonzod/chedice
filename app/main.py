@@ -9,10 +9,11 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.responses import HTMLResponse, Response
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from app import utils
+from app import llm, utils
 from app.config import get_settings
 from app.jobs import JobStore, Worker, new_job_id, now
 from app.models import Job, Segment
@@ -29,6 +30,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 _UPLOAD_CHUNK = 1024 * 1024
 _YOUTUBE_URL = re.compile(r"^https?://(www\.|m\.|music\.)?(youtube\.com/|youtu\.be/)", re.IGNORECASE)
 _SAMPLE_MAX_SECONDS = 6.0  # longest voice sample cut for verification playback
+_MAX_TRANSCRIPT_CHARS = 60000  # cap the transcript sent to the LLM as context
 
 
 def _representative_segment(job: Job, speaker: str) -> Segment | None:
@@ -147,6 +149,27 @@ async def list_categories() -> list[str]:
     return store.categories()
 
 
+@app.get("/api/config")
+async def get_config() -> dict:
+    """Return the current LLM connection settings for the configuration form."""
+    config = llm.LLMConfig.from_store(store.get_config())
+    return config.to_public_dict()
+
+
+@app.put("/api/config")
+async def update_config(payload: dict = Body(...)) -> dict:
+    """Persist the LLM connection settings entered in the configuration mask."""
+    values = {
+        "llm_enabled": "true" if payload.get("enabled") else "false",
+        "llm_base_url": str(payload.get("base_url") or "").strip(),
+        "llm_api_key": str(payload.get("api_key") or "").strip(),
+        "llm_model": str(payload.get("model") or "").strip(),
+        "llm_temperature": str(payload.get("temperature", 0.3)),
+    }
+    store.set_config(values)
+    return llm.LLMConfig.from_store(store.get_config()).to_public_dict()
+
+
 @app.get("/api/jobs")
 async def list_jobs() -> list[dict]:
     # Keep the list lightweight: omit the (potentially large) transcript.
@@ -256,6 +279,80 @@ async def set_category(job_id: str, payload: dict = Body(...)) -> dict:
     job.category = _normalize_category(payload.get("category"))
     store.save(job)
     return job.public_dict()
+
+
+@app.post("/api/jobs/{job_id}/ask")
+async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
+    """Stream an AI answer about a completed transcript, token by token.
+
+    The transcript (with any custom speaker names) is passed as context, so the
+    user can ask e.g. "fammi un riassunto" or "cosa afferma Marco nel video?".
+    The response is streamed as plain text to the browser as it is generated;
+    once complete, the full exchange is appended to the job's AI history.
+    """
+    prompt = str(payload.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Scrivi una domanda o una richiesta.")
+
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato.")
+    if not job.segments:
+        raise HTTPException(status_code=409, detail="Trascrizione non ancora disponibile.")
+
+    config = llm.LLMConfig.from_store(store.get_config())
+    if not config.is_ready:
+        raise HTTPException(
+            status_code=409,
+            detail="Il modello LLM non è configurato. Aprilo dalle impostazioni ⚙️.",
+        )
+
+    transcript = formats.to_txt(job.segments, job.speaker_names or None)
+    if len(transcript) > _MAX_TRANSCRIPT_CHARS:
+        transcript = transcript[:_MAX_TRANSCRIPT_CHARS] + "\n\n[…trascrizione troncata…]"
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Sei un assistente che risponde a domande e produce riassunti a partire "
+                "dalla trascrizione di un video/audio fornita qui sotto. Basati solo sul "
+                "contenuto della trascrizione; se l'informazione non è presente, dillo "
+                "chiaramente. Rispondi nella lingua della richiesta dell'utente.\n\n"
+                f"=== TRASCRIZIONE ({job.filename}) ===\n{transcript}\n=== FINE TRASCRIZIONE ==="
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+    # Open (and validate) the connection before streaming, so config/connection
+    # errors become a proper HTTP error instead of a broken stream.
+    try:
+        resp = await run_in_threadpool(
+            llm.open_stream, config, messages, read_timeout=settings.llm_request_timeout
+        )
+    except llm.LLMError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    def generate():
+        parts: list[str] = []
+        try:
+            for piece in llm.iter_stream(resp):
+                parts.append(piece)
+                yield piece
+        finally:
+            answer = "".join(parts).strip()
+            if answer:  # persist only a non-empty exchange
+                job.ai_messages.append(
+                    {"prompt": prompt, "answer": answer, "created_at": now()}
+                )
+                store.save(job)
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/plain; charset=utf-8",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.get("/api/jobs/{job_id}/download/{fmt}")

@@ -64,6 +64,9 @@ class Job:
     # Optional custom labels: {"SPEAKER 1": "Marco", ...}. Applied on download.
     speaker_names: dict[str, str] = field(default_factory=dict)
 
+    # AI Q&A history: [{"prompt": str, "answer": str, "created_at": float}, ...].
+    ai_messages: list[dict] = field(default_factory=list)
+
     segments: list[Segment] = field(default_factory=list)
 
     # ---- Serialization -------------------------------------------------
@@ -93,6 +96,7 @@ class Job:
             category=data.get("category"),
         )
         job.speaker_names = data.get("speaker_names", {})
+        job.ai_messages = data.get("ai_messages", []) or []
         job.segments = [Segment.from_dict(s) for s in data.get("segments", [])]
         return job
 
@@ -114,5 +118,6 @@ class Job:
             "category": self.category,
             "created_at": self.created_at,
             "speaker_names": self.speaker_names,
+            "ai_messages": self.ai_messages,
             "segments": [s.to_dict() for s in self.segments],
         }
