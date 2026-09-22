@@ -1,4 +1,29 @@
 services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    container_name: chedice-llama
+    command:
+      - -hf
+      - Qwen/Qwen3-VL-2B-Instruct-GGUF:Q4_K_M
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --ctx-size
+      - "8192"
+      - -ngl
+      - "99"
+    volumes:
+      - llama-models:/root/.cache
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: no
+
   app:
     build: .
     container_name: chedice
@@ -17,7 +42,10 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    restart: never
+    restart: no
+    depends_on:
+      - llama
 
 volumes:
   model-cache:
+  llama-models:

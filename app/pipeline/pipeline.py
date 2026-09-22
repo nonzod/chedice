@@ -6,6 +6,7 @@ so the models live for the lifetime of the worker thread that owns the Pipeline.
 
 from __future__ import annotations
 
+import gc
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -34,6 +35,19 @@ class Pipeline:
         self.settings = settings
         self._transcriber: Transcriber | None = None
         self._diarizer: Diarizer | None = None
+
+    def release_speech_models(self) -> None:
+        """Release transcription/diarization allocations before local vision inference."""
+        self._transcriber = None
+        self._diarizer = None
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
 
     # ---- Lazy model loading -------------------------------------------
     @property
@@ -66,6 +80,7 @@ class Pipeline:
             self._download(job, on_update)
 
         source = Path(job.source_path)
+        job.has_video = audio.has_video_stream(source)
 
         # 1) Extract audio.
         on_update(_P_EXTRACT, "Estrazione audio")
@@ -128,10 +143,11 @@ class Pipeline:
                 last_pct = pct
                 on_update(1.0 + fraction * (_P_DOWNLOAD_END - 1.0), "Scaricamento video")
 
-        path, title = download.download_audio(
+        path, title = download.download_media(
             job.source_url, self.settings.uploads_dir, job.id, progress_cb=download_progress
         )
         job.source_path = str(path)
         job.filename = title
         job.stem = utils.safe_stem(title)
+        job.has_video = audio.has_video_stream(path)
         on_update(_P_DOWNLOAD_END, "Video scaricato")

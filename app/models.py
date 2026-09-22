@@ -61,6 +61,11 @@ class Job:
 
     category: str | None = None  # optional label used to group transcriptions
 
+    has_video: bool = False
+    visual_description: str = ""
+    visual_status: str = "not_started"
+    visual_error: str | None = None
+
     # Optional custom labels: {"SPEAKER 1": "Marco", ...}. Applied on download.
     speaker_names: dict[str, str] = field(default_factory=dict)
 
@@ -94,6 +99,10 @@ class Job:
             duration=data.get("duration"),
             error=data.get("error"),
             category=data.get("category"),
+            has_video=data.get("has_video", False),
+            visual_description=data.get("visual_description", ""),
+            visual_status=data.get("visual_status", "not_started"),
+            visual_error=data.get("visual_error"),
         )
         job.speaker_names = data.get("speaker_names", {})
         job.ai_messages = data.get("ai_messages", []) or []
@@ -116,6 +125,10 @@ class Job:
             "duration": self.duration,
             "error": self.error,
             "category": self.category,
+            "has_video": self.has_video,
+            "visual_description": self.visual_description,
+            "visual_status": self.visual_status,
+            "visual_error": self.visual_error,
             "created_at": self.created_at,
             "speaker_names": self.speaker_names,
             "ai_messages": self.ai_messages,

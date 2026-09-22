@@ -1,4 +1,4 @@
-"""Download audio from a URL (YouTube et al.) via yt-dlp."""
+"""Download video media from a URL (YouTube et al.) via yt-dlp."""
 
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ class DownloadError(Exception):
 
 def _friendly_message(raw: str) -> str:
     text = raw.lower()
+    if "requested format is not available" in text:
+        return "YouTube non ha fornito un formato video/audio compatibile. Riprova più tardi."
     if "private" in text:
         return "Il video è privato."
     if "age" in text and "restrict" in text:
@@ -28,13 +30,13 @@ def _friendly_message(raw: str) -> str:
     return "Impossibile scaricare il video. Verifica che il link sia corretto."
 
 
-def download_audio(
+def download_media(
     url: str,
     dest_dir: Path,
     job_id: str,
     progress_cb: Callable[[float], None] | None = None,
 ) -> tuple[Path, str]:
-    """Download the best audio track of ``url`` into ``dest_dir``.
+    """Download a muxed video with audio from ``url`` into ``dest_dir``.
 
     Args:
         url: source URL.
@@ -56,13 +58,23 @@ def download_audio(
             if total:
                 progress_cb(min(status.get("downloaded_bytes", 0) / total, 1.0))
 
+    final_path: Path | None = None
+
+    def postprocessor_hook(status: dict) -> None:
+        nonlocal final_path
+        if status.get("status") == "finished":
+            filepath = (status.get("info_dict") or {}).get("filepath")
+            if filepath:
+                final_path = Path(filepath)
+
     options = {
-        "format": "bestaudio/best",
+        "format": "bestvideo*+bestaudio/best",
         "outtmpl": str(dest_dir / f"{job_id}.%(ext)s"),
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
         "progress_hooks": [hook],
+        "postprocessor_hooks": [postprocessor_hook],
     }
 
     try:
@@ -71,7 +83,8 @@ def download_audio(
             if info.get("is_live"):
                 raise DownloadError("I video in diretta (live) non sono supportati.")
             title = info.get("title") or "video"
-            path = Path(ydl.prepare_filename(info))
+            prepared_path = Path(ydl.prepare_filename(info))
+            path = final_path if final_path and final_path.exists() else prepared_path
     except DownloadError:
         raise
     except yt_dlp.utils.DownloadError as exc:
@@ -82,6 +95,6 @@ def download_audio(
         raise DownloadError("Errore imprevisto durante il download del video.") from exc
 
     if not path.exists():
-        raise DownloadError("Il file audio scaricato non è stato trovato.")
+        raise DownloadError("Il file video scaricato non è stato trovato.")
 
     return path, title

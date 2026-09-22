@@ -348,6 +348,36 @@ body {
 .se-row input:focus-visible { outline: 2px solid var(--accent); }
 
 /* ---- Transcript ---- */
+.visual-panel {
+  margin-top: 18px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.visual-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
+.visual-head .btn-secondary { width: auto; flex: 0 0 auto; }
+.visual-head h3 { margin: 0; font-size: 14px; }
+.visual-head p, .visual-status { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
+.visual-status.error { color: var(--danger); }
+.visual-status .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+  font: inherit;
+}
+.visual-description {
+  margin-top: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--panel-2);
+  white-space: pre-wrap;
+  line-height: 1.6;
+  font-size: 14px;
+}
 .transcript { margin-top: 8px; display: flex; flex-direction: column; gap: 14px; }
 .turn { display: flex; gap: 12px; align-items: flex-start; }
 .turn .avatar {
@@ -419,6 +449,13 @@ body {
   cursor: pointer;
   font-size: inherit;
 }
+.settings-section + .settings-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+.settings-section h3 { margin: 0 0 6px; font-size: 14px; }
+.settings-section > p { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
 .ai-history {
   display: flex;
   flex-direction: column;

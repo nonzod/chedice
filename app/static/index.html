@@ -125,6 +125,21 @@
           <div id="speakerFields" class="speaker-fields"></div>
         </div>
 
+        <section id="visualPanel" class="visual-panel hidden">
+          <div class="visual-head">
+            <div>
+              <h3>🎞️ Scene chiave</h3>
+              <p>Fotogrammi analizzati in locale con un modello vision.</p>
+            </div>
+            <button id="describeScenesBtn" type="button" class="btn-secondary">Analizza scene</button>
+          </div>
+          <p id="visionConfigHint" class="visual-status hidden">
+            Modello vision non configurato · <button type="button" class="link" id="visionOpenSettings">imposta ⚙️</button>
+          </p>
+          <p id="visualStatus" class="visual-status"></p>
+          <div id="visualDescription" class="visual-description hidden"></div>
+        </section>
+
         <div id="transcript" class="transcript"></div>
 
         <div id="aiPanel" class="ai-panel hidden">
@@ -162,41 +177,65 @@
         <h2 id="settingsTitle">⚙️ Impostazioni LLM</h2>
         <button id="settingsClose" class="modal-close" aria-label="Chiudi">✕</button>
       </div>
-      <p class="modal-sub">Collega un modello via API OpenAI-compatibile (OpenRouter,
-        Ollama remoto, ecc.) per generare riassunti e rispondere a domande sul testo.</p>
+      <p class="modal-sub">Configura separatamente il modello testuale per domande e prompt e il modello vision per le scene.</p>
 
-      <label class="switch-field">
-        <input id="llmEnabled" type="checkbox" />
-        <span>Abilita il modello LLM</span>
-      </label>
+      <section class="settings-section">
+        <h3>💬 Assistente testuale</h3>
+        <p>Usato per domande sulla trascrizione e prompt. Richiede un runtime testuale locale.</p>
+        <label class="switch-field">
+          <input id="llmEnabled" type="checkbox" />
+          <span>Abilita assistente testuale</span>
+        </label>
 
-      <label class="field">
-        <span>Base URL</span>
-        <input id="llmBaseUrl" type="text" autocomplete="off" spellcheck="false"
-               placeholder="https://openrouter.ai/api/v1" />
-      </label>
+        <label class="field">
+          <span>URL runtime testuale</span>
+          <input id="llmBaseUrl" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="http://localhost:8080" />
+        </label>
 
-      <label class="field">
-        <span>API key</span>
-        <input id="llmApiKey" type="password" autocomplete="off"
-               placeholder="sk-… (vuoto per Ollama locale)" />
-      </label>
+        <label class="field">
+          <span>Modello testuale</span>
+          <input id="llmModel" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Nome del modello testuale caricato" />
+        </label>
 
-      <label class="field">
-        <span>Modello</span>
-        <input id="llmModel" type="text" autocomplete="off" spellcheck="false"
-               placeholder="es. openai/gpt-4o-mini oppure llama3.1" />
-      </label>
+        <label class="field">
+          <span>Temperatura</span>
+          <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
+        </label>
 
-      <label class="field">
-        <span>Temperatura</span>
-        <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
-      </label>
+        <div class="modal-actions">
+          <span id="settingsStatus" class="settings-status"></span>
+          <button id="settingsSave" class="btn-primary">Salva assistente testuale</button>
+        </div>
+      </section>
 
-      <div class="modal-actions">
-        <span id="settingsStatus" class="settings-status"></span>
-        <button id="settingsSave" class="btn-primary">Salva</button>
-      </div>
+      <section class="settings-section">
+        <h3>🎞️ Analisi visiva</h3>
+        <p>Usata solo per descrivere i fotogrammi. Runtime llama.cpp dedicato, modello Qwen3-VL 2B.</p>
+        <label class="switch-field">
+          <input id="visionEnabled" type="checkbox" />
+          <span>Abilita analisi visiva</span>
+        </label>
+        <label class="field">
+          <span>URL runtime vision</span>
+          <input id="visionBaseUrl" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="http://llama:8080" />
+        </label>
+        <label class="field">
+          <span>Modello vision</span>
+          <input id="visionModel" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="Qwen3-VL-2B-Instruct-GGUF:Q4_K_M" />
+        </label>
+        <label class="field">
+          <span>Temperatura vision</span>
+          <input id="visionTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
+        </label>
+        <div class="modal-actions">
+          <span id="visionSettingsStatus" class="settings-status"></span>
+          <button id="visionSettingsSave" class="btn-primary">Salva modello vision</button>
+        </div>
+      </section>
     </div>
   </div>
 

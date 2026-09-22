@@ -43,6 +43,7 @@ def _representative_segment(job: Job, speaker: str) -> Segment | None:
 async def lifespan(_: FastAPI):
     settings.ensure_dirs()
     store.load()
+    _separate_legacy_vision_settings()
     worker.start()
     worker.requeue_pending()
     logger.info("chedice ready — device=%s model=%s", settings.device, settings.whisper_model)
@@ -51,6 +52,26 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="chedice", version="0.1.0", lifespan=lifespan)
+
+
+def _separate_legacy_vision_settings() -> None:
+    """Move the previous combined Qwen vision settings out of the text assistant."""
+    raw = store.get_config()
+    legacy_model = str(raw.get("llm_model") or "")
+    if raw.get("vision_model") or "Qwen3-VL" not in legacy_model:
+        return
+    if not llm.is_vision_base_url(str(raw.get("llm_base_url") or "")):
+        return
+    store.set_config({
+        "vision_enabled": raw.get("llm_enabled", "false"),
+        "vision_base_url": raw.get("llm_base_url", ""),
+        "vision_model": legacy_model,
+        "vision_temperature": raw.get("llm_temperature", "0.3"),
+        "llm_enabled": "false",
+        "llm_base_url": "",
+        "llm_model": "",
+        "llm_api_key": "",
+    })
 
 
 def _normalize_options(num_speakers: object, language: object) -> tuple[int | None, str | None]:
@@ -153,21 +174,57 @@ async def list_categories() -> list[str]:
 async def get_config() -> dict:
     """Return the current LLM connection settings for the configuration form."""
     config = llm.LLMConfig.from_store(store.get_config())
+    public = config.to_public_dict()
+    if public["enabled"] and not llm.is_text_base_url(config.base_url):
+        public.update({"enabled": False, "base_url": "", "api_key": "", "model": ""})
+    return public
+
+
+@app.get("/api/vision-config")
+async def get_vision_config() -> dict:
+    """Return the independent vision-model settings."""
+    config = llm.LLMConfig.from_store(store.get_config(), prefix="vision")
     return config.to_public_dict()
 
 
 @app.put("/api/config")
 async def update_config(payload: dict = Body(...)) -> dict:
     """Persist the LLM connection settings entered in the configuration mask."""
+    base_url = str(payload.get("base_url") or "").strip()
+    if payload.get("enabled") and base_url and not llm.is_text_base_url(base_url):
+        raise HTTPException(
+            status_code=422,
+            detail="Configura un endpoint testuale locale, separato dal runtime vision.",
+        )
     values = {
         "llm_enabled": "true" if payload.get("enabled") else "false",
-        "llm_base_url": str(payload.get("base_url") or "").strip(),
-        "llm_api_key": str(payload.get("api_key") or "").strip(),
+        "llm_base_url": base_url,
+        "llm_api_key": "",
         "llm_model": str(payload.get("model") or "").strip(),
         "llm_temperature": str(payload.get("temperature", 0.3)),
     }
     store.set_config(values)
     return llm.LLMConfig.from_store(store.get_config()).to_public_dict()
+
+
+@app.put("/api/vision-config")
+async def update_vision_config(payload: dict = Body(...)) -> dict:
+    """Persist vision runtime settings independently from the text assistant."""
+    base_url = str(payload.get("base_url") or "").strip()
+    if payload.get("enabled") and base_url and not llm.is_vision_base_url(base_url):
+        raise HTTPException(
+            status_code=422,
+            detail="Configura un endpoint locale per il modello vision.",
+        )
+    values = {
+        "vision_enabled": "true" if payload.get("enabled") else "false",
+        "vision_base_url": base_url,
+        "vision_api_key": "",
+        "vision_model": str(payload.get("model") or "").strip(),
+        "vision_temperature": str(payload.get("temperature", 0.3)),
+    }
+    store.set_config(values)
+    return llm.LLMConfig.from_store(store.get_config(), prefix="vision").to_public_dict()
 
 
 @app.get("/api/jobs")
@@ -301,6 +358,11 @@ async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
         raise HTTPException(status_code=409, detail="Trascrizione non ancora disponibile.")
 
     config = llm.LLMConfig.from_store(store.get_config())
+    if not llm.is_text_base_url(config.base_url):
+        raise HTTPException(
+            status_code=409,
+            detail="Configura un modello testuale locale distinto dal modello vision.",
+        )
     if not config.is_ready:
         raise HTTPException(
             status_code=409,
@@ -353,6 +415,33 @@ async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
         media_type="text/plain; charset=utf-8",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/jobs/{job_id}/describe-scenes")
+async def describe_scenes(job_id: str) -> dict:
+    """Analyze sampled video frames with a local llama.cpp vision model."""
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato.")
+    if job.status != "completed":
+        raise HTTPException(status_code=409, detail="Attendi il completamento della trascrizione.")
+    if not job.has_video or not job.source_path:
+        raise HTTPException(status_code=409, detail="Questo job non contiene un video analizzabile.")
+    if job.visual_status in ("queued", "processing"):
+        raise HTTPException(status_code=409, detail="Analisi visiva già in corso.")
+    config = llm.LLMConfig.from_store(store.get_config(), prefix="vision")
+    if not config.is_ready:
+        raise HTTPException(
+            status_code=409,
+            detail="Configura il modello vision nella sezione dedicata delle impostazioni ⚙️.",
+        )
+    if not llm.is_vision_base_url(config.base_url):
+        raise HTTPException(status_code=409, detail="Configura un runtime vision locale.")
+    job.visual_status = "queued"
+    job.visual_error = None
+    store.save(job)
+    worker.enqueue_scene_analysis(job.id)
+    return job.public_dict()
 
 
 @app.get("/api/jobs/{job_id}/download/{fmt}")

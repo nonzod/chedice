@@ -14,13 +14,14 @@ Applicazione web per la **trascrizione di video** con **riconoscimento dei parla
   i parlanti** prima del download.
 - **Campioni vocali**: per ogni parlante rilevato puoi **ascoltare un breve estratto**
   (pulsante ▶) e verificare che la diarization sia corretta prima di rinominarlo.
+- **Scene chiave**: analizza fotogrammi campionati e ottieni descrizioni con timestamp,
+  ambientazione, soggetti e azioni con un modello vision locale.
 - **Categorie**: assegna una **categoria** a ogni trascrizione per raggrupparle e
   ritrovarle facilmente (con autocompletamento delle categorie già usate).
 - **Cronologia e archivio**: pannello "Recenti" con stato live dei job, riapertura e
   cancellazione; le trascrizioni completate restano archiviate nel database.
-- **Assistente AI (opzionale)**: collega un modello LLM via API **OpenAI-compatibile**
-  (OpenRouter, Ollama remoto, ecc.) dalle impostazioni ⚙️ e fai domande sul testo o
-  chiedi un riassunto direttamente dalla schermata della trascrizione.
+- **Assistente AI locale (opzionale)**: configura il modello dalle impostazioni ⚙️ per fare
+  domande sul testo, chiedere riassunti e descrivere le scene senza inviare contenuti a servizi remoti.
 - **UI web**: interfaccia leggera senza build step (HTML/CSS/JS vanilla), drag & drop,
   progresso in tempo reale e anteprima colorata per parlante.
 
@@ -29,7 +30,8 @@ Applicazione web per la **trascrizione di video** con **riconoscimento dei parla
 ## Requisiti
 
 - GPU NVIDIA con driver recenti (testato su RTX 4070 Ti, 12 GB).
-- Docker + Docker Compose + **NVIDIA Container Toolkit**.
+- Docker + Docker Compose + **NVIDIA Container Toolkit**. Il runtime llama.cpp viene
+  eseguito come servizio Docker privato sulla stessa macchina.
 
 Verifica rapida:
 
@@ -49,6 +51,8 @@ docker compose up --build
 ```
 
 Apri **http://localhost:8000**.
+
+Al primo avvio llama.cpp scarica il modello vision quantizzato Qwen3-VL 2B nel volume locale.
 
 > ⚠️ **Primo avvio**: al primo job vengono scaricati i modelli (Whisper `large-v3`
 > ~3 GB + ECAPA). Restano in cache nel volume `model-cache`, quindi succede una sola volta.
@@ -100,16 +104,22 @@ Dall'interfaccia puoi anche forzare la **lingua** e il **numero di parlanti** pe
 - **Cronologia**: il pannello "Recenti" elenca i job con il loro stato; clicca per
   riaprirli o usa ✕ per eliminarli (rimuove anche file sorgente e cache correlati).
 
-### Assistente AI (LLM)
+### Modelli AI
 
-La connessione al modello si configura **dall'interfaccia** (icona ⚙️ in alto a destra),
-non da env, e viene salvata nel database (tabella `app_settings`):
+Le impostazioni ⚙️ tengono separati i due modelli e i relativi endpoint:
 
-- **Base URL** — endpoint OpenAI-compatibile, es. `https://openrouter.ai/api/v1` oppure
-  `http://mio-ollama:11434/v1`.
-- **API key** — token del provider (lascia vuoto per un Ollama locale senza auth).
-- **Modello** — es. `openai/gpt-4o-mini` (OpenRouter) o `llama3.1` (Ollama).
-- **Temperatura** — creatività della risposta (default `0.3`).
+- **Assistente testuale** — usato solo per domande sulla trascrizione e prompt. Va configurato
+  con un proprio runtime locale compatibile; non usa il modello vision.
+- **Analisi visiva** — usa il runtime llama.cpp dedicato su `http://llama:8080` e
+  `Qwen3-VL-2B-Instruct-GGUF:Q4_K_M`.
+
+Le due configurazioni si salvano separatamente nel database. Una vecchia configurazione
+che puntava Qwen3-VL come modello unico viene migrata automaticamente alla sezione vision.
+
+Il download iniziale del modello richiede una connessione internet; elaborazione e richieste
+successive avvengono sul PC. Per le scene viene inviato al modello un massimo di otto
+fotogrammi ridimensionati. L'app mette la richiesta in coda con le trascrizioni e rilascia prima i
+modelli vocali dalla GPU. Gli endpoint remoti vengono rifiutati.
 
 Una volta abilitato, sotto ogni trascrizione completata compare il box **🤖 Chiedi all'AI**:
 scrivi una richiesta libera (es. «*Fammi un riassunto*» o «*Cosa afferma Marco nel video?*»)
@@ -120,8 +130,8 @@ La risposta è in **streaming end-to-end**: i token arrivano dal modello e compa
 nell'interfaccia man mano che vengono generati (endpoint `text/plain` in streaming).
 Questo evita anche i timeout, perché i dati continuano a fluire. Con modelli grossi o su
 CPU il primo avvio "a freddo" può essere lungo: regola il timeout tra i chunk con
-`APP_LLM_REQUEST_TIMEOUT` (default `300` secondi) e assicurati che Ollama sia
-raggiungibile in rete (`OLLAMA_HOST=0.0.0.0:11434`). A fine generazione lo scambio
+`APP_LLM_REQUEST_TIMEOUT` (default `300` secondi) e assicurati che il servizio `llama`
+sia avviato. A fine generazione lo scambio
 domanda/risposta viene salvato nel job.
 
 ## Sviluppo locale (senza Docker)
@@ -151,7 +161,8 @@ uvicorn app.main:app --reload
 | `GET /api/categories` | Categorie distinte già in uso (per l'autocompletamento). |
 | `GET /api/archive` | Trascrizioni completate (solo metadati) con i link di download. |
 | `GET /api/config` | Configurazione LLM corrente. |
-| `PUT /api/config` | Aggiorna la configurazione LLM (`enabled`, `base_url`, `api_key`, `model`, `temperature`). |
+| `PUT /api/config` | Aggiorna la configurazione dell'assistente testuale. |
+| `GET/PUT /api/vision-config` | Legge e aggiorna la configurazione del modello vision. |
 
 ## Struttura
 
@@ -161,11 +172,12 @@ app/
   config.py          # impostazioni (env / .env)
   models.py          # Job e Segment
   jobs.py            # store persistente (SQLite) + worker in background + config app
-  llm.py             # client LLM OpenAI-compatibile (riassunti / Q&A sul testo)
+  llm.py             # client LLM locale per riassunti e Q&A
+  vision.py          # analisi di fotogrammi con llama.cpp locale
   utils.py           # helper condivisi (nomi file sicuri)
   pipeline/
-    download.py      # download audio da URL (yt-dlp)
-    audio.py         # estrazione audio (ffmpeg)
+    download.py      # download media video da URL (yt-dlp)
+    audio.py         # estrazione audio e fotogrammi (ffmpeg)
     transcribe.py    # faster-whisper (con fallback anti-VAD)
     diarize.py       # embedding ECAPA + clustering
     formats.py       # export SRT/VTT/TXT/JSON (nomi parlanti applicati al volo)

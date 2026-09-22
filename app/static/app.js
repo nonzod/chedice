@@ -26,6 +26,12 @@ const progressWrap = $("progressWrap");
 const progressBar = $("progressBar");
 const stageLabel = $("stageLabel");
 const transcriptEl = $("transcript");
+const visualPanel = $("visualPanel");
+const describeScenesBtn = $("describeScenesBtn");
+const visionConfigHint = $("visionConfigHint");
+const visionOpenSettings = $("visionOpenSettings");
+const visualStatus = $("visualStatus");
+const visualDescription = $("visualDescription");
 const historyList = $("historyList");
 const speakerEditor = $("speakerEditor");
 const speakerFields = $("speakerFields");
@@ -45,9 +51,14 @@ const settingsSave = $("settingsSave");
 const settingsStatus = $("settingsStatus");
 const llmEnabled = $("llmEnabled");
 const llmBaseUrl = $("llmBaseUrl");
-const llmApiKey = $("llmApiKey");
 const llmModel = $("llmModel");
 const llmTemperature = $("llmTemperature");
+const visionEnabled = $("visionEnabled");
+const visionBaseUrl = $("visionBaseUrl");
+const visionModel = $("visionModel");
+const visionTemperature = $("visionTemperature");
+const visionSettingsSave = $("visionSettingsSave");
+const visionSettingsStatus = $("visionSettingsStatus");
 // AI panel
 const aiPanel = $("aiPanel");
 const aiHistory = $("aiHistory");
@@ -58,6 +69,7 @@ const aiOpenSettings = $("aiOpenSettings");
 
 // Whether an LLM is configured & enabled (drives the AI panel hint).
 let llmReady = false;
+let visionReady = false;
 
 // ---- File selection ----
 function pickFile(file) {
@@ -176,7 +188,8 @@ function startPolling(jobId) {
     const job = await res.json();
     if (job.id !== activeJobId) return;
     showJob(job);
-    if (job.status === "completed" || job.status === "failed") {
+    const sceneRunning = job.visual_status === "queued" || job.visual_status === "processing";
+    if ((job.status === "completed" || job.status === "failed") && !sceneRunning) {
       clearInterval(pollTimer);
       loadHistory();
     }
@@ -220,6 +233,20 @@ function showJob(job) {
   if (done) buildSpeakerEditor(job);
   else speakerEditor.classList.add("hidden");
 
+    visualPanel.classList.toggle("hidden", !done || !job.has_video);
+    if (done && job.has_video) {
+    const sceneRunning = job.visual_status === "queued" || job.visual_status === "processing";
+    describeScenesBtn.disabled = sceneRunning;
+    describeScenesBtn.textContent = sceneRunning
+      ? "Analisi in corso…"
+      : job.visual_status === "completed" ? "Rigenera analisi" : "Analizza scene";
+    visualStatus.textContent = job.visual_status === "failed" ? (job.visual_error || "Analisi non riuscita") : "";
+    visualStatus.classList.toggle("error", job.visual_status === "failed");
+      visualDescription.textContent = job.visual_description || "";
+      visualDescription.classList.toggle("hidden", !job.visual_description);
+      visionConfigHint.classList.toggle("hidden", visionReady);
+  }
+
   if (job.status === "failed") {
     transcriptEl.innerHTML = `<p class="stage-label">❌ ${escapeHtml(job.error || "Errore")}</p>`;
   } else if (job.segments && job.segments.length) {
@@ -237,6 +264,37 @@ function showJob(job) {
     aiPanel.classList.add("hidden");
   }
 }
+
+describeScenesBtn.addEventListener("click", async () => {
+  if (!currentJob) return;
+  const jobId = currentJob.id;
+  describeScenesBtn.disabled = true;
+  describeScenesBtn.textContent = "Analisi in corso…";
+  visualStatus.textContent = "Estrazione dei fotogrammi e analisi locale…";
+  visualStatus.classList.remove("error");
+  try {
+    const res = await fetch(`/api/jobs/${jobId}/describe-scenes`, { method: "POST" });
+    const job = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(job.detail || "Errore durante l’analisi delle scene");
+    if (activeJobId === jobId) {
+      showJob(job);
+      if (job.visual_status === "queued" || job.visual_status === "processing") startPolling(jobId);
+    }
+  } catch (err) {
+    visualStatus.textContent = `❌ ${err.message}`;
+    visualStatus.classList.add("error");
+  } finally {
+    if (currentJob && currentJob.id === jobId) {
+      const sceneRunning = currentJob.visual_status === "queued" || currentJob.visual_status === "processing";
+      describeScenesBtn.disabled = sceneRunning;
+      describeScenesBtn.textContent = sceneRunning
+        ? "Analisi in corso…"
+        : currentJob.visual_description ? "Rigenera analisi" : "Analizza scene";
+    } else {
+      describeScenesBtn.disabled = false;
+    }
+  }
+});
 
 function displayName(speaker) {
   if (!speaker) return null;
@@ -604,23 +662,38 @@ aiOpenSettings.addEventListener("click", openSettings);
 // ---- Settings modal (LLM configuration) ----
 async function loadConfig() {
   try {
-    const res = await fetch("/api/config");
-    if (!res.ok) return;
-    const cfg = await res.json();
-    llmEnabled.checked = !!cfg.enabled;
-    llmBaseUrl.value = cfg.base_url || "";
-    llmApiKey.value = cfg.api_key || "";
-    llmModel.value = cfg.model || "";
-    llmTemperature.value = cfg.temperature != null ? cfg.temperature : 0.3;
-    llmReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    const [textRes, visionRes] = await Promise.all([
+      fetch("/api/config"),
+      fetch("/api/vision-config"),
+    ]);
+    if (textRes.ok) {
+      const cfg = await textRes.json();
+      llmEnabled.checked = !!cfg.enabled;
+      llmBaseUrl.value = cfg.base_url || "";
+      llmModel.value = cfg.model || "";
+      llmTemperature.value = cfg.temperature != null ? cfg.temperature : 0.3;
+      llmReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    }
+    if (visionRes.ok) {
+      const cfg = await visionRes.json();
+      visionEnabled.checked = !!cfg.enabled;
+      visionBaseUrl.value = cfg.base_url || "http://llama:8080";
+      visionModel.value = cfg.model || "Qwen3-VL-2B-Instruct-GGUF:Q4_K_M";
+      visionTemperature.value = cfg.temperature != null ? cfg.temperature : 0.3;
+      visionReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    }
     if (!aiPanel.classList.contains("hidden")) {
       aiConfigHint.classList.toggle("hidden", llmReady);
+    }
+    if (currentJob && currentJob.has_video) {
+      visionConfigHint.classList.toggle("hidden", visionReady);
     }
   } catch (_) { /* keep defaults */ }
 }
 
 function openSettings() {
   settingsStatus.textContent = "";
+  visionSettingsStatus.textContent = "";
   settingsModal.classList.remove("hidden");
   loadConfig();
 }
@@ -647,7 +720,6 @@ settingsSave.addEventListener("click", async () => {
       body: JSON.stringify({
         enabled: llmEnabled.checked,
         base_url: llmBaseUrl.value.trim(),
-        api_key: llmApiKey.value.trim(),
         model: llmModel.value.trim(),
         temperature: parseFloat(llmTemperature.value) || 0.3,
       }),
@@ -666,6 +738,37 @@ settingsSave.addEventListener("click", async () => {
     settingsSave.disabled = false;
   }
 });
+
+visionSettingsSave.addEventListener("click", async () => {
+  visionSettingsSave.disabled = true;
+  visionSettingsStatus.textContent = "Salvataggio…";
+  try {
+    const res = await fetch("/api/vision-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        enabled: visionEnabled.checked,
+        base_url: visionBaseUrl.value.trim(),
+        model: visionModel.value.trim(),
+        temperature: parseFloat(visionTemperature.value) || 0.3,
+      }),
+    });
+    const cfg = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(cfg.detail || "Errore nel salvataggio del modello vision");
+    visionReady = !!(cfg.enabled && cfg.base_url && cfg.model);
+    if (currentJob && currentJob.has_video) {
+      visionConfigHint.classList.toggle("hidden", visionReady);
+    }
+    visionSettingsStatus.textContent = "✅ Salvato";
+    setTimeout(closeSettings, 700);
+  } catch (err) {
+    visionSettingsStatus.textContent = "❌ " + err.message;
+  } finally {
+    visionSettingsSave.disabled = false;
+  }
+});
+
+visionOpenSettings.addEventListener("click", openSettings);
 
 // ---- Init ----
 loadHistory();

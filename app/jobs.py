@@ -43,6 +43,10 @@ _SCALAR_COLUMNS = (
     "duration",
     "error",
     "category",
+    "has_video",
+    "visual_description",
+    "visual_status",
+    "visual_error",
 )
 _JSON_COLUMNS = ("speaker_names", "segments", "ai_messages")
 _ALL_COLUMNS = _SCALAR_COLUMNS + _JSON_COLUMNS
@@ -83,6 +87,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     duration REAL,
     error TEXT,
     category TEXT,
+    has_video INTEGER NOT NULL DEFAULT 0,
+    visual_description TEXT NOT NULL DEFAULT '',
+    visual_status TEXT NOT NULL DEFAULT 'not_started',
+    visual_error TEXT,
     speaker_names TEXT NOT NULL DEFAULT '{}',
     segments TEXT NOT NULL DEFAULT '[]',
     ai_messages TEXT NOT NULL DEFAULT '[]'
@@ -126,6 +134,14 @@ class JobStore:
             self._db.execute(
                 "ALTER TABLE jobs ADD COLUMN ai_messages TEXT NOT NULL DEFAULT '[]'"
             )
+        for name, definition in (
+            ("has_video", "INTEGER NOT NULL DEFAULT 0"),
+            ("visual_description", "TEXT NOT NULL DEFAULT ''"),
+            ("visual_status", "TEXT NOT NULL DEFAULT 'not_started'"),
+            ("visual_error", "TEXT"),
+        ):
+            if name not in existing:
+                self._db.execute(f"ALTER TABLE jobs ADD COLUMN {name} {definition}")
 
     # ---- Row <-> Job conversion ---------------------------------------
     @staticmethod
@@ -134,6 +150,7 @@ class JobStore:
         data["speaker_names"] = json.dumps(job.speaker_names, ensure_ascii=False)
         data["segments"] = json.dumps([s.to_dict() for s in job.segments], ensure_ascii=False)
         data["ai_messages"] = json.dumps(job.ai_messages, ensure_ascii=False)
+        data["has_video"] = int(job.has_video)
         return {col: data.get(col) for col in _ALL_COLUMNS}
 
     @staticmethod
@@ -250,7 +267,7 @@ class Worker:
     def __init__(self, store: JobStore, settings: Settings) -> None:
         self._store = store
         self._settings = settings
-        self._queue: queue.Queue[str] = queue.Queue()
+        self._queue: queue.Queue[tuple[str, str]] = queue.Queue()
         self._pipeline: Pipeline | None = None
         self._thread = threading.Thread(target=self._run, name="chedice-worker", daemon=True)
         self._stop = threading.Event()
@@ -260,10 +277,13 @@ class Worker:
 
     def stop(self) -> None:
         self._stop.set()
-        self._queue.put("")  # unblock the queue
+        self._queue.put(("stop", ""))  # unblock the queue
 
     def enqueue(self, job_id: str) -> None:
-        self._queue.put(job_id)
+        self._queue.put(("transcribe", job_id))
+
+    def enqueue_scene_analysis(self, job_id: str) -> None:
+        self._queue.put(("scenes", job_id))
 
     def requeue_pending(self) -> None:
         """Re-queue jobs left unfinished by a previous run."""
@@ -274,13 +294,20 @@ class Worker:
                 job.stage = "In coda"
                 self._store.save(job)
                 self.enqueue(job.id)
+            elif job.visual_status in ("queued", "processing"):
+                job.visual_status = "queued"
+                self._store.save(job)
+                self.enqueue_scene_analysis(job.id)
 
     def _run(self) -> None:
         while not self._stop.is_set():
-            job_id = self._queue.get()
-            if self._stop.is_set() or not job_id:
+            task, job_id = self._queue.get()
+            if self._stop.is_set() or task == "stop":
                 break
-            self._process(job_id)
+            if task == "transcribe":
+                self._process(job_id)
+            elif task == "scenes":
+                self._analyze_scenes(job_id)
 
     def _process(self, job_id: str) -> None:
         job = self._store.get(job_id)
@@ -307,6 +334,38 @@ class Worker:
             job.error = str(exc)
             job.stage = "Errore"
             self._store.save(job)
+
+    def _analyze_scenes(self, job_id: str) -> None:
+        job = self._store.get(job_id)
+        if job is None:
+            return
+        if not job.has_video or not job.source_path or not Path(job.source_path).is_file():
+            job.visual_status = "failed"
+            job.visual_error = "Il file video sorgente non è disponibile."
+            self._store.save(job)
+            return
+        if self._pipeline is not None:
+            self._pipeline.release_speech_models()
+
+        from app import llm, vision
+
+        job.visual_status = "processing"
+        job.visual_error = None
+        self._store.save(job)
+        try:
+            config = llm.LLMConfig.from_store(self._store.get_config(), prefix="vision")
+            job.visual_description = vision.describe_video(
+                Path(job.source_path),
+                job.duration,
+                config,
+                self._settings.llm_request_timeout,
+            )
+            job.visual_status = "completed"
+        except Exception as exc:  # noqa: BLE001 — preserve queue and surface the failure
+            logger.exception("Scene analysis failed for job %s", job_id)
+            job.visual_status = "failed"
+            job.visual_error = str(exc)
+        self._store.save(job)
 
 
 def new_job_id() -> str:

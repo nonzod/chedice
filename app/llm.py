@@ -1,4 +1,4 @@
-"""Minimal client for OpenAI-compatible chat APIs (OpenRouter, Ollama, …).
+"""Minimal client for local OpenAI-compatible chat completions.
 
 The LLM connection is configured at runtime from the settings UI and persisted
 in SQLite (see :class:`app.jobs.JobStore`), so no environment variables or
@@ -33,7 +33,7 @@ _DEFAULT_READ_TIMEOUT = 300  # seconds between chunks (survives model cold-start
 
 
 class LLMError(RuntimeError):
-    """Raised when the LLM is not configured or the remote call fails."""
+    """Raised when the local model is not configured or the request fails."""
 
 
 @dataclass
@@ -47,8 +47,11 @@ class LLMConfig:
     temperature: float = 0.3
 
     @classmethod
-    def from_store(cls, raw: dict[str, str]) -> LLMConfig:
-        data = {**_DEFAULTS, **{k: v for k, v in raw.items() if v is not None}}
+    def from_store(cls, raw: dict[str, str], prefix: str = "llm") -> LLMConfig:
+        data = {}
+        for name, fallback in _DEFAULTS.items():
+            setting = raw.get(f"{prefix}_{name.removeprefix('llm_')}")
+            data[name] = fallback if setting is None else setting
         return cls(
             enabled=str(data["llm_enabled"]).lower() in ("1", "true", "yes", "on"),
             base_url=str(data["llm_base_url"]).strip(),
@@ -84,8 +87,8 @@ def _endpoint(base_url: str) -> str:
 
     Tolerant of the common ways people enter it:
     - full endpoint (``…/chat/completions``) → used as-is;
-    - bare host (``http://host:11434``, no path) → assume an OpenAI-compatible
-      server mounted under ``/v1`` (Ollama, LocalAI, …);
+    - bare host (``http://llama:8080``, no path) → assume an OpenAI-compatible
+      server mounted under ``/v1`` (llama.cpp);
     - anything else (``…/v1``, ``…/api/v1``) → append ``/chat/completions``.
     """
     base = base_url.rstrip("/")
@@ -95,6 +98,28 @@ def _endpoint(base_url: str) -> str:
     if path in ("", "/"):  # bare host:port → OpenAI-compatible APIs live under /v1
         return f"{base}/v1/chat/completions"
     return f"{base}/chat/completions"
+
+
+def is_local_base_url(base_url: str) -> bool:
+    """Whether a configured model endpoint is loopback or our private Compose service."""
+    host = (urlparse(base_url.strip()).hostname or "").lower()
+    return host in (
+        "localhost",
+        "::1",
+        "llama",
+        "text-llm",
+        "host.docker.internal",
+    ) or host.startswith("127.")
+
+
+def is_text_base_url(base_url: str) -> bool:
+    """Text assistant may not target the dedicated vision-model service."""
+    return is_local_base_url(base_url) and urlparse(base_url.strip()).hostname != "llama"
+
+
+def is_vision_base_url(base_url: str) -> bool:
+    """Vision analysis may target its dedicated Compose service or local runtime."""
+    return is_local_base_url(base_url) and urlparse(base_url.strip()).hostname != "text-llm"
 
 
 def open_stream(
@@ -113,10 +138,12 @@ def open_stream(
     """
     if not config.is_ready:
         raise LLMError("Il modello LLM non è configurato. Aprilo dalle impostazioni ⚙️.")
+    if not is_local_base_url(config.base_url):
+        raise LLMError(
+            "Sono consentiti solo runtime locali. In Docker usa http://llama:8080."
+        )
 
     headers = {"Content-Type": "application/json"}
-    if config.api_key:
-        headers["Authorization"] = f"Bearer {config.api_key}"
 
     payload = {
         "model": config.model,
