@@ -357,6 +357,9 @@ body {
 }
 .visual-head { display: flex; justify-content: space-between; align-items: center; gap: 14px; }
 .visual-head .btn-secondary { width: auto; flex: 0 0 auto; }
+.visual-actions { display: flex; align-items: center; gap: 10px; }
+.visual-detail-field { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.visual-detail-field select { padding: 7px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-2); color: var(--text); font: inherit; }
 .visual-head h3 { margin: 0; font-size: 14px; }
 .visual-head p, .visual-status { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
 .visual-status.error { color: var(--danger); }

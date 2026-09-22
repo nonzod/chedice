@@ -131,7 +131,16 @@
               <h3>🎞️ Scene chiave</h3>
               <p>Fotogrammi analizzati in locale con un modello vision.</p>
             </div>
-            <button id="describeScenesBtn" type="button" class="btn-secondary">Analizza scene</button>
+            <div class="visual-actions">
+              <label class="visual-detail-field" for="visualDetail">Dettaglio
+                <select id="visualDetail">
+                  <option value="base">Base</option>
+                  <option value="medium" selected>Medio</option>
+                  <option value="advanced">Avanzato</option>
+                </select>
+              </label>
+              <button id="describeScenesBtn" type="button" class="btn-secondary">Analizza scene</button>
+            </div>
           </div>
           <p id="visionConfigHint" class="visual-status hidden">
             Modello vision non configurato · <button type="button" class="link" id="visionOpenSettings">imposta ⚙️</button>

@@ -8,6 +8,7 @@ restarts are needed to point the app at a different endpoint or model.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
@@ -34,6 +35,14 @@ _DEFAULT_READ_TIMEOUT = 300  # seconds between chunks (survives model cold-start
 
 class LLMError(RuntimeError):
     """Raised when the local model is not configured or the request fails."""
+
+
+class LLMIncompleteError(LLMError):
+    """Raised when a streamed answer did not finish normally."""
+
+    def __init__(self, message: str, partial_text: str) -> None:
+        super().__init__(message)
+        self.partial_text = partial_text
 
 
 @dataclass
@@ -127,6 +136,7 @@ def open_stream(
     messages: list[dict],
     *,
     temperature: float | None = None,
+    max_tokens: int | None = None,
     read_timeout: int | None = None,
 ) -> requests.Response:
     """Open a streamed ``/chat/completions`` request and return the live response.
@@ -151,6 +161,8 @@ def open_stream(
         "temperature": config.temperature if temperature is None else temperature,
         "stream": True,
     }
+    if max_tokens is not None:
+        payload["max_tokens"] = max_tokens
     timeout = (_CONNECT_TIMEOUT, read_timeout or _DEFAULT_READ_TIMEOUT)
 
     try:
@@ -175,7 +187,10 @@ def open_stream(
     return resp
 
 
-def iter_stream(resp: requests.Response):
+def iter_stream(
+    resp: requests.Response,
+    on_finish: Callable[[str | None], None] | None = None,
+):
     """Yield text pieces from an OpenAI-compatible SSE stream of chat deltas.
 
     Swallows a mid-stream transport error (the caller keeps whatever was already
@@ -199,6 +214,12 @@ def iter_stream(resp: requests.Response):
             piece = _delta_text(chunk)
             if piece:
                 yield piece
+            try:
+                finish_reason = chunk["choices"][0].get("finish_reason")
+            except (KeyError, IndexError, TypeError):
+                finish_reason = None
+            if finish_reason is not None and on_finish is not None:
+                on_finish(str(finish_reason))
     except requests.RequestException:
         return  # a stall after partial output — stop, keep what was yielded
     finally:
@@ -210,13 +231,35 @@ def chat(
     messages: list[dict],
     *,
     temperature: float | None = None,
+    max_tokens: int | None = None,
     read_timeout: int | None = None,
+    require_complete: bool = False,
 ) -> str:
     """Non-streaming convenience wrapper: assemble the full answer as one string."""
-    resp = open_stream(config, messages, temperature=temperature, read_timeout=read_timeout)
-    text = "".join(iter_stream(resp)).strip()
+    resp = open_stream(
+        config,
+        messages,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        read_timeout=read_timeout,
+    )
+    finish_reason: str | None = None
+
+    def record_finish(reason: str | None) -> None:
+        nonlocal finish_reason
+        finish_reason = reason
+
+    text = "".join(iter_stream(resp, record_finish if require_complete else None)).strip()
     if not text:
         raise LLMError("Il modello non ha restituito alcun testo.")
+    if require_complete and finish_reason != "stop":
+        if finish_reason == "length":
+            detail = "Il modello ha raggiunto il limite massimo di token prima di completare tutte le scene."
+        elif finish_reason is None:
+            detail = "La risposta si è interrotta senza segnale di completamento dal runtime."
+        else:
+            detail = f"Il runtime ha terminato la risposta in modo incompleto ({finish_reason})."
+        raise LLMIncompleteError(detail, text)
     return text
 
 

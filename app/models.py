@@ -63,6 +63,7 @@ class Job:
 
     has_video: bool = False
     visual_description: str = ""
+    visual_detail: str = "medium"
     visual_status: str = "not_started"
     visual_error: str | None = None
 
@@ -101,6 +102,7 @@ class Job:
             category=data.get("category"),
             has_video=data.get("has_video", False),
             visual_description=data.get("visual_description", ""),
+            visual_detail=data.get("visual_detail", "medium"),
             visual_status=data.get("visual_status", "not_started"),
             visual_error=data.get("visual_error"),
         )
@@ -127,6 +129,7 @@ class Job:
             "category": self.category,
             "has_video": self.has_video,
             "visual_description": self.visual_description,
+            "visual_detail": self.visual_detail,
             "visual_status": self.visual_status,
             "visual_error": self.visual_error,
             "created_at": self.created_at,

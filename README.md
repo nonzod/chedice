@@ -121,6 +121,13 @@ successive avvengono sul PC. Per le scene viene inviato al modello un massimo di
 fotogrammi ridimensionati. L'app mette la richiesta in coda con le trascrizioni e rilascia prima i
 modelli vocali dalla GPU. Gli endpoint remoti vengono rifiutati.
 
+Nel pannello **Scene chiave** puoi scegliere il livello **Base**, **Medio** o **Avanzato**:
+regola la profondità della descrizione e il budget di generazione (512, 1536 o 3072 token).
+Ogni livello chiede di completare tutte le scene fino all'ultimo fotogramma.
+Il runtime deve segnalare una chiusura normale: se raggiunge il limite di token o lo stream si
+interrompe, il job viene marcato come incompleto, mostra un avviso e conserva l'eventuale testo
+parziale per permettere di riprovare.
+
 Una volta abilitato, sotto ogni trascrizione completata compare il box **🤖 Chiedi all'AI**:
 scrivi una richiesta libera (es. «*Fammi un riassunto*» o «*Cosa afferma Marco nel video?*»)
 o usa i preset. La trascrizione (coi nomi dei parlanti) viene passata come contesto e lo
@@ -163,6 +170,7 @@ uvicorn app.main:app --reload
 | `GET /api/config` | Configurazione LLM corrente. |
 | `PUT /api/config` | Aggiorna la configurazione dell'assistente testuale. |
 | `GET/PUT /api/vision-config` | Legge e aggiorna la configurazione del modello vision. |
+| `POST /api/jobs/{id}/describe-scenes` | Analizza le scene (`detail`: `base`, `medium` o `advanced`; predefinito `medium`). |
 
 ## Struttura
 

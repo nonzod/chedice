@@ -418,7 +418,7 @@ async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
 
 
 @app.post("/api/jobs/{job_id}/describe-scenes")
-async def describe_scenes(job_id: str) -> dict:
+async def describe_scenes(job_id: str, payload: dict = Body(default={})) -> dict:
     """Analyze sampled video frames with a local llama.cpp vision model."""
     job = store.get(job_id)
     if job is None:
@@ -437,6 +437,11 @@ async def describe_scenes(job_id: str) -> dict:
         )
     if not llm.is_vision_base_url(config.base_url):
         raise HTTPException(status_code=409, detail="Configura un runtime vision locale.")
+    detail = str(payload.get("detail", "medium")).lower()
+    if detail not in {"base", "medium", "advanced"}:
+        raise HTTPException(status_code=422, detail="Livello di dettaglio non valido.")
+    job.visual_detail = detail
+    job.visual_description = ""
     job.visual_status = "queued"
     job.visual_error = None
     store.save(job)

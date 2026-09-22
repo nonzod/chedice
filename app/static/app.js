@@ -32,6 +32,7 @@ const visionConfigHint = $("visionConfigHint");
 const visionOpenSettings = $("visionOpenSettings");
 const visualStatus = $("visualStatus");
 const visualDescription = $("visualDescription");
+const visualDetail = $("visualDetail");
 const historyList = $("historyList");
 const speakerEditor = $("speakerEditor");
 const speakerFields = $("speakerFields");
@@ -233,18 +234,20 @@ function showJob(job) {
   if (done) buildSpeakerEditor(job);
   else speakerEditor.classList.add("hidden");
 
-    visualPanel.classList.toggle("hidden", !done || !job.has_video);
-    if (done && job.has_video) {
+  visualPanel.classList.toggle("hidden", !done || !job.has_video);
+  if (done && job.has_video) {
+    visualDetail.value = job.visual_detail || "medium";
     const sceneRunning = job.visual_status === "queued" || job.visual_status === "processing";
     describeScenesBtn.disabled = sceneRunning;
     describeScenesBtn.textContent = sceneRunning
       ? "Analisi in corso…"
-      : job.visual_status === "completed" ? "Rigenera analisi" : "Analizza scene";
+      : job.visual_status === "completed" ? "Rigenera analisi"
+        : job.visual_status === "failed" ? "Riprova analisi" : "Analizza scene";
     visualStatus.textContent = job.visual_status === "failed" ? (job.visual_error || "Analisi non riuscita") : "";
     visualStatus.classList.toggle("error", job.visual_status === "failed");
-      visualDescription.textContent = job.visual_description || "";
-      visualDescription.classList.toggle("hidden", !job.visual_description);
-      visionConfigHint.classList.toggle("hidden", visionReady);
+    visualDescription.textContent = job.visual_description || "";
+    visualDescription.classList.toggle("hidden", !job.visual_description);
+    visionConfigHint.classList.toggle("hidden", visionReady);
   }
 
   if (job.status === "failed") {
@@ -273,7 +276,11 @@ describeScenesBtn.addEventListener("click", async () => {
   visualStatus.textContent = "Estrazione dei fotogrammi e analisi locale…";
   visualStatus.classList.remove("error");
   try {
-    const res = await fetch(`/api/jobs/${jobId}/describe-scenes`, { method: "POST" });
+    const res = await fetch(`/api/jobs/${jobId}/describe-scenes`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ detail: visualDetail.value }),
+    });
     const job = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(job.detail || "Errore durante l’analisi delle scene");
     if (activeJobId === jobId) {
@@ -289,7 +296,8 @@ describeScenesBtn.addEventListener("click", async () => {
       describeScenesBtn.disabled = sceneRunning;
       describeScenesBtn.textContent = sceneRunning
         ? "Analisi in corso…"
-        : currentJob.visual_description ? "Rigenera analisi" : "Analizza scene";
+        : currentJob.visual_status === "failed" ? "Riprova analisi"
+          : currentJob.visual_description ? "Rigenera analisi" : "Analizza scene";
     } else {
       describeScenesBtn.disabled = false;
     }

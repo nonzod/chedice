@@ -45,6 +45,7 @@ _SCALAR_COLUMNS = (
     "category",
     "has_video",
     "visual_description",
+    "visual_detail",
     "visual_status",
     "visual_error",
 )
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     category TEXT,
     has_video INTEGER NOT NULL DEFAULT 0,
     visual_description TEXT NOT NULL DEFAULT '',
+    visual_detail TEXT NOT NULL DEFAULT 'medium',
     visual_status TEXT NOT NULL DEFAULT 'not_started',
     visual_error TEXT,
     speaker_names TEXT NOT NULL DEFAULT '{}',
@@ -137,6 +139,7 @@ class JobStore:
         for name, definition in (
             ("has_video", "INTEGER NOT NULL DEFAULT 0"),
             ("visual_description", "TEXT NOT NULL DEFAULT ''"),
+            ("visual_detail", "TEXT NOT NULL DEFAULT 'medium'"),
             ("visual_status", "TEXT NOT NULL DEFAULT 'not_started'"),
             ("visual_error", "TEXT"),
         ):
@@ -359,12 +362,15 @@ class Worker:
                 job.duration,
                 config,
                 self._settings.llm_request_timeout,
+                job.visual_detail,
             )
             job.visual_status = "completed"
         except Exception as exc:  # noqa: BLE001 — preserve queue and surface the failure
             logger.exception("Scene analysis failed for job %s", job_id)
+            if isinstance(exc, llm.LLMIncompleteError):
+                job.visual_description = exc.partial_text
             job.visual_status = "failed"
-            job.visual_error = str(exc)
+            job.visual_error = f"Analisi incompleta: {exc}" if isinstance(exc, llm.LLMIncompleteError) else str(exc)
         self._store.save(job)
 
 
