@@ -194,7 +194,10 @@ async def update_config(payload: dict = Body(...)) -> dict:
     if payload.get("enabled") and base_url and not llm.is_text_base_url(base_url):
         raise HTTPException(
             status_code=422,
-            detail="Configura un endpoint testuale locale, separato dal runtime vision.",
+            detail=(
+                "Imposta un runtime testuale locale distinto da http://llama:8080 "
+                "(ad esempio host.docker.internal o un IP privato della rete)."
+            ),
         )
     values = {
         "llm_enabled": "true" if payload.get("enabled") else "false",

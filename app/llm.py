@@ -7,6 +7,7 @@ restarts are needed to point the app at a different endpoint or model.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -111,19 +112,29 @@ def _endpoint(base_url: str) -> str:
 
 def is_local_base_url(base_url: str) -> bool:
     """Whether a configured model endpoint is loopback or our private Compose service."""
-    host = (urlparse(base_url.strip()).hostname or "").lower()
-    return host in (
+    parsed = urlparse(base_url.strip())
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if host in (
         "localhost",
         "::1",
         "llama",
         "text-llm",
         "host.docker.internal",
-    ) or host.startswith("127.")
+    ):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return host.startswith("127.")
+    return address.is_private or address.is_loopback or address.is_link_local
 
 
 def is_text_base_url(base_url: str) -> bool:
     """Text assistant may not target the dedicated vision-model service."""
-    return is_local_base_url(base_url) and urlparse(base_url.strip()).hostname != "llama"
+    host = (urlparse(base_url.strip()).hostname or "").lower()
+    return is_local_base_url(base_url) and host != "llama"
 
 
 def is_vision_base_url(base_url: str) -> bool:

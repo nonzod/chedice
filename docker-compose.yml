@@ -10,7 +10,11 @@ services:
       - --port
       - "8080"
       - --ctx-size
-      - "8192"
+      - "16384"
+      - --reasoning
+      - "off"
+      - --repeat-penalty
+      - "1.12"
       - -ngl
       - "99"
     volumes:

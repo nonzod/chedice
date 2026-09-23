@@ -31,32 +31,36 @@ def describe_video(
         )
         profiles = {
             "base": (
-                "Profilo BASE: sii molto conciso. Riporta solo intervalli temporali e "
-                "per ogni scena una frase con ambiente, soggetti e azione principale. "
-                "Massimo 2 frasi per scena."
+            "Profilo BASE: sii molto conciso. Riporta solo intervalli temporali e "
+            "per ogni scena una frase con ambiente, soggetti e azione principale. "
+            "Massimo una frase per scena."
             ),
             "medium": (
-                "Profilo MEDIO: descrivi ambiente, soggetti e caratteristiche visibili, "
-                "azioni e cambi di scena. Usa punti elenco brevi e accorpa fotogrammi "
-                "consecutivi della stessa scena."
+            "Profilo MEDIO: descrivi ambiente, soggetti e caratteristiche visibili, "
+            "azioni e cambi di scena. Usa al massimo 2 frasi brevi per scena e accorpa "
+            "fotogrammi consecutivi della stessa scena."
             ),
             "advanced": (
                 "Profilo AVANZATO: fornisci una descrizione ricca ma fedele per ogni "
                 "scena: ambiente e sfondo, soggetti e loro posizione, abbigliamento o "
                 "tratti distintivi osservabili, oggetti, azioni, gesti e transizioni. "
                 "Evidenzia anche la continuità tra scene quando utile. Non ripetere "
-                "dettagli invariati inutilmente."
+                "dettagli invariati inutilmente. Massimo 4 frasi per scena."
             ),
         }
-        budgets = {"base": 512, "medium": 1536, "advanced": 3072}
+        # Eight sampled frames need far fewer tokens than the previous loose
+        # prompt encouraged; the server context also reserves room for images.
+        budgets = {"base": 768, "medium": 2048, "advanced": 4096}
         detail = detail if detail in profiles else "medium"
         prompt = (
-            "Analizza tutti i fotogrammi estratti in ordine temporale da un video e "
-            "completa l'analisi di TUTTE le scene fino all'ultima immagine. In italiano, "
-            "usa per ogni scena un intervallo [inizio - fine] e non lasciare elenchi "
-            "aperti o frasi incomplete. Non interrompere la risposta prima dell'ultima "
-            "scena. Distingui ciò che è chiaramente visibile dalle ipotesi; non "
-            "identificare persone reali e non inventare dettagli non osservabili.\n\n"
+            "Analizza i fotogrammi forniti in ordine temporale e descrivi tutte le scene "
+            "fino all'ultima immagine. In italiano, crea una voce numerata per ogni scena, "
+            "con timestamp approssimativo e testo conciso. Unisci immagini consecutive "
+            "solo se mostrano chiaramente la stessa scena. Non ripetere formule come "
+            "'l'immagine è chiaramente visibile', non aggiungere introduzioni o conclusioni "
+            "e non ripetere dettagli invariati. Usa solo elementi osservabili, senza "
+            "identificare persone reali o inventare dettagli. Chiudi l'ultima voce con una "
+            "frase completa.\n\n"
             + profiles[detail] + "\n\n"
             + labels
         )

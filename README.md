@@ -122,7 +122,9 @@ fotogrammi ridimensionati. L'app mette la richiesta in coda con le trascrizioni 
 modelli vocali dalla GPU. Gli endpoint remoti vengono rifiutati.
 
 Nel pannello **Scene chiave** puoi scegliere il livello **Base**, **Medio** o **Avanzato**:
-regola la profondità della descrizione e il budget di generazione (512, 1536 o 3072 token).
+regola la profondità della descrizione e il budget di generazione (768, 2048 o 4096 token).
+Il runtime vision usa un contesto da 16K e disabilita il token-budget speso in ragionamenti
+nascosti, così i token disponibili sono destinati alla descrizione visibile.
 Ogni livello chiede di completare tutte le scene fino all'ultimo fotogramma.
 Il runtime deve segnalare una chiusura normale: se raggiunge il limite di token o lo stream si
 interrompe, il job viene marcato come incompleto, mostra un avviso e conserva l'eventuale testo
