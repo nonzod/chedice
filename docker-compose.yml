@@ -50,6 +50,12 @@ services:
     depends_on:
       - llama
 
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.31.240.0/24
+
 volumes:
   model-cache:
   llama-models:
