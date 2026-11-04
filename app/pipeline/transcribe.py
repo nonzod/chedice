@@ -8,7 +8,7 @@ from pathlib import Path
 
 from faster_whisper import WhisperModel
 
-from app.models import Segment
+from app.models import Segment, Word
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,9 @@ class Transcriber:
             language=language,
             beam_size=beam_size,
             vad_filter=vad_filter,
+            # Per-word timings let diarization split a segment where the speaker
+            # changes mid-sentence instead of labelling the whole segment.
+            word_timestamps=True,
         )
 
         segments: list[Segment] = []
@@ -86,7 +89,12 @@ class Transcriber:
             text = seg.text.strip()
             if not text:
                 continue
-            segments.append(Segment(start=seg.start, end=seg.end, text=text))
+            words = [
+                Word(start=w.start, end=w.end, text=w.word)
+                for w in (seg.words or [])
+                if w.word and w.word.strip()
+            ]
+            segments.append(Segment(start=seg.start, end=seg.end, text=text, words=words))
             if progress_cb and duration:
                 progress_cb(min(seg.end / duration, 1.0))
 

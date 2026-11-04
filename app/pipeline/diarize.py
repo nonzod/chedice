@@ -8,6 +8,11 @@ The number of speakers is chosen automatically by trying several cluster counts
 and keeping the one with the best silhouette separation. If even the best split
 is weak, the audio is treated as a single speaker — this avoids splitting one
 voice into several phantom speakers, which a fixed distance threshold is prone to.
+
+Window labels are then smoothed (majority vote over neighbouring windows) and
+attributed at *word* level when Whisper word timestamps are available: each word
+gets the speaker of the windows centred around it, very short speaker turns are
+absorbed by their neighbours, and segments are split where the speaker changes.
 """
 
 from __future__ import annotations
@@ -61,14 +66,20 @@ class Diarizer:
         num_speakers: int | None,
         min_speakers: int,
         max_speakers: int,
-    ) -> int:
-        """Assign a ``speaker`` label to each segment in place.
+        smoothing_radius: int = 1,
+        min_turn_seconds: float = 0.8,
+    ) -> tuple[list[Segment], int]:
+        """Attribute speakers to ``segments``.
+
+        Segments with word timings are split where the speaker changes, so the
+        returned list may be longer than the input one.
 
         Returns:
-            The number of distinct speakers found.
+            The (possibly split) speaker-labelled segments and the number of
+            distinct speakers found.
         """
         if not segments:
-            return 0
+            return segments, 0
 
         waveform, sample_rate = torchaudio.load(str(audio_path))
         audio = self._to_mono(waveform).squeeze(0)
@@ -78,7 +89,7 @@ class Diarizer:
         if len(windows) <= 1:
             for seg in segments:
                 seg.speaker = "SPEAKER 1"
-            return 1
+            return segments, 1
 
         embeddings = self._embed_windows(audio, sample_rate, windows)
         labels = self._cluster(
@@ -88,7 +99,10 @@ class Diarizer:
             min_speakers=min_speakers,
             max_speakers=max_speakers,
         )
-        return self._assign_speakers(segments, windows, labels)
+        order = sorted(range(len(windows)), key=lambda i: windows[i].start)
+        windows = [windows[i] for i in order]
+        labels = self._smooth(labels[order], smoothing_radius)
+        return self._assign_speakers(segments, windows, labels, min_turn_seconds)
 
     # ---- Windowing -----------------------------------------------------
     @staticmethod
@@ -247,37 +261,135 @@ class Diarizer:
                 return labels
         return scored[0][2]
 
+    # ---- Smoothing ----------------------------------------------------
+    @staticmethod
+    def _smooth(labels: np.ndarray, radius: int) -> np.ndarray:
+        """Majority vote over ``radius`` neighbours on each side (time-ordered).
+
+        Ties keep the window's own label, so genuine turns are preserved while
+        isolated one-window flips (noisy embeddings) are removed.
+        """
+        if radius <= 0 or len(labels) < 3:
+            return labels
+        smoothed = labels.copy()
+        for i in range(len(labels)):
+            lo, hi = max(0, i - radius), min(len(labels), i + radius + 1)
+            values, counts = np.unique(labels[lo:hi], return_counts=True)
+            best = counts.max()
+            winners = values[counts == best]
+            if labels[i] not in winners:
+                smoothed[i] = winners[0]
+        return smoothed
+
     # ---- Attribution ---------------------------------------------------
     def _assign_speakers(
-        self, segments: list[Segment], windows: list[_Window], labels: np.ndarray
-    ) -> int:
-        """Attribute a speaker to each segment and give stable, ordered names."""
-        raw_by_segment = [self._segment_label(seg, windows, labels) for seg in segments]
+        self,
+        segments: list[Segment],
+        windows: list[_Window],
+        labels: np.ndarray,
+        min_turn_seconds: float,
+    ) -> tuple[list[Segment], int]:
+        """Attribute speakers (per word when possible) and give ordered names."""
+        pieces: list[tuple[Segment, int]] = []
+        for seg in segments:
+            if seg.words:
+                pieces.extend(self._split_by_words(seg, windows, labels, min_turn_seconds))
+            else:
+                pieces.append((seg, self._span_label(seg.start, seg.end, windows, labels)))
 
         # Rename raw cluster ids to "SPEAKER N" in order of first appearance.
         order: dict[int, str] = {}
-        for raw in raw_by_segment:
+        for _, raw in pieces:
             if raw not in order:
                 order[raw] = f"SPEAKER {len(order) + 1}"
 
-        for seg, raw in zip(segments, raw_by_segment, strict=True):
+        result: list[Segment] = []
+        for seg, raw in pieces:
             seg.speaker = order[raw]
-        return len(order)
+            result.append(seg)
+        return result, len(order)
+
+    def _split_by_words(
+        self,
+        seg: Segment,
+        windows: list[_Window],
+        labels: np.ndarray,
+        min_turn_seconds: float,
+    ) -> list[tuple[Segment, int]]:
+        """Label each word, absorb very short turns and split at speaker changes."""
+        word_labels = [self._span_label(w.start, w.end, windows, labels) for w in seg.words]
+
+        # Group consecutive words with the same label into runs.
+        runs: list[list] = []  # [label, [words]]
+        for word, label in zip(seg.words, word_labels, strict=True):
+            if runs and runs[-1][0] == label:
+                runs[-1][1].append(word)
+            else:
+                runs.append([label, [word]])
+
+        # Absorb runs shorter than ``min_turn_seconds`` into the longer neighbour,
+        # shortest first, until every run is long enough (or only one is left).
+        def run_span(run: list) -> float:
+            return run[1][-1].end - run[1][0].start
+
+        while len(runs) > 1:
+            shortest = min(range(len(runs)), key=lambda i: run_span(runs[i]))
+            if run_span(runs[shortest]) >= min_turn_seconds:
+                break
+            neighbours = [i for i in (shortest - 1, shortest + 1) if 0 <= i < len(runs)]
+            target = max(neighbours, key=lambda i: run_span(runs[i]))
+            if target < shortest:
+                runs[target][1].extend(runs[shortest][1])
+            else:
+                runs[target][1][:0] = runs[shortest][1]
+            del runs[shortest]
+            # Merge neighbours that now share the same label.
+            merged: list[list] = []
+            for run in runs:
+                if merged and merged[-1][0] == run[0]:
+                    merged[-1][1].extend(run[1])
+                else:
+                    merged.append(run)
+            runs = merged
+
+        if len(runs) == 1:
+            return [(seg, runs[0][0])]
+
+        pieces: list[tuple[Segment, int]] = []
+        for i, (label, words) in enumerate(runs):
+            start = seg.start if i == 0 else words[0].start
+            end = seg.end if i == len(runs) - 1 else words[-1].end
+            text = "".join(w.text for w in words).strip()
+            if not text:
+                continue
+            piece = Segment(start=start, end=end, text=text, words=list(words))
+            pieces.append((piece, label))
+        return pieces or [(seg, runs[0][0])]
 
     @staticmethod
-    def _segment_label(seg: Segment, windows: list[_Window], labels: np.ndarray) -> int:
-        """Pick the cluster with the greatest temporal overlap with the segment."""
-        overlap: dict[int, float] = {}
+    def _span_label(
+        start: float, end: float, windows: list[_Window], labels: np.ndarray
+    ) -> int:
+        """Pick the cluster that best covers ``[start, end]``.
+
+        Overlap is weighted by how close each window's centre is to the span's
+        centre, so the windows centred on a word dominate those that only graze it.
+        """
+        mid = (start + end) / 2
+        scores: dict[int, float] = {}
         for win, label in zip(windows, labels, strict=True):
-            span = min(seg.end, win.end) - max(seg.start, win.start)
-            if span > 0:
-                overlap[int(label)] = overlap.get(int(label), 0.0) + span
+            span = min(end, win.end) - max(start, win.start)
+            if span <= 0:
+                continue
+            half = (win.end - win.start) / 2 or 1e-6
+            centre = (win.start + win.end) / 2
+            weight = max(0.1, 1.0 - abs(centre - mid) / half)
+            scores[int(label)] = scores.get(int(label), 0.0) + span * weight
 
-        if overlap:
-            return max(overlap, key=overlap.get)
+        if scores:
+            return max(scores, key=scores.get)
 
-        # No overlap (short segment between windows): use the nearest window.
-        mid = (seg.start + seg.end) / 2
+        # No overlap (short span between windows): use the nearest window.
         nearest = min(
             range(len(windows)),
             key=lambda i: abs(mid - (windows[i].start + windows[i].end) / 2),

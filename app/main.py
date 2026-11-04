@@ -7,6 +7,7 @@ import re
 import subprocess
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import quote
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
@@ -16,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app import llm, utils
 from app.config import get_settings
 from app.jobs import JobStore, Worker, new_job_id, now
-from app.models import Job, Segment
+from app.models import Job, JobStatus, Segment
 from app.pipeline import audio, formats
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -31,6 +32,7 @@ _UPLOAD_CHUNK = 1024 * 1024
 _YOUTUBE_URL = re.compile(r"^https?://(www\.|m\.|music\.)?(youtube\.com/|youtu\.be/)", re.IGNORECASE)
 _SAMPLE_MAX_SECONDS = 6.0  # longest voice sample cut for verification playback
 _MAX_TRANSCRIPT_CHARS = 60000  # cap the transcript sent to the LLM as context
+_SPEAKER_LABEL = re.compile(r"^SPEAKER \d+$")
 
 
 def _representative_segment(job: Job, speaker: str) -> Segment | None:
@@ -89,6 +91,37 @@ def _normalize_options(num_speakers: object, language: object) -> tuple[int | No
     return speakers, lang
 
 
+def _normalize_model(model: object) -> str | None:
+    """Validate a Whisper model chosen in the UI; blank/default -> ``None``."""
+    name = str(model).strip() if model not in (None, "") else ""
+    if not name or name in ("default", "auto"):
+        return None
+    if name not in settings.whisper_model_choices:
+        raise HTTPException(status_code=422, detail=f"Modello Whisper non supportato: {name}")
+    return None if name == settings.whisper_model else name
+
+
+def _get_job(job_id: str) -> Job:
+    job = store.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Job non trovato.")
+    return job
+
+
+def _require_editable(job: Job) -> None:
+    """Transcript edits are allowed only on a finished, idle transcript."""
+    if job.status != JobStatus.COMPLETED or not job.segments:
+        raise HTTPException(status_code=409, detail="La trascrizione non è disponibile.")
+
+
+def _after_speaker_change(job: Job) -> None:
+    """Refresh derived speaker data after labels were edited, merged or reassigned."""
+    present = set(job.speakers)
+    job.speaker_count = len(present) or None
+    job.speaker_names = {k: v for k, v in job.speaker_names.items() if k in present}
+    store.clear_samples(job.id)
+
+
 def _normalize_category(category: object) -> str | None:
     """Trim a category label; blank selections become ``None``."""
     label = str(category).strip() if category not in (None, "") else ""
@@ -106,9 +139,11 @@ async def create_job(
     num_speakers: int | None = Form(None),
     language: str | None = Form(None),
     category: str | None = Form(None),
+    whisper_model: str | None = Form(None),
 ) -> dict:
     if not file.filename:
         raise HTTPException(status_code=400, detail="Nessun file fornito.")
+    model = _normalize_model(whisper_model)
 
     job_id = new_job_id()
     dest = settings.uploads_dir / f"{job_id}_{utils.safe_name(file.filename)}"
@@ -133,6 +168,7 @@ async def create_job(
         created_at=now(),
         requested_speakers=speakers,
         requested_language=lang,
+        requested_model=model,
         category=_normalize_category(category),
     )
     store.add(job)
@@ -148,6 +184,7 @@ async def create_youtube_job(payload: dict = Body(...)) -> dict:
         raise HTTPException(status_code=400, detail="Inserisci un link YouTube valido.")
 
     speakers, lang = _normalize_options(payload.get("num_speakers"), payload.get("language"))
+    model = _normalize_model(payload.get("whisper_model"))
     job = Job(
         id=new_job_id(),
         filename="Video YouTube",  # replaced by the real title after download
@@ -157,11 +194,18 @@ async def create_youtube_job(payload: dict = Body(...)) -> dict:
         source_url=url,
         requested_speakers=speakers,
         requested_language=lang,
+        requested_model=model,
         category=_normalize_category(payload.get("category")),
     )
     store.add(job)
     worker.enqueue(job.id)
     return job.public_dict()
+
+
+@app.get("/api/models")
+async def list_models() -> dict:
+    """Whisper models selectable from the UI, and the server default."""
+    return {"default": settings.whisper_model, "choices": settings.whisper_model_choices}
 
 
 @app.get("/api/categories")
@@ -170,64 +214,122 @@ async def list_categories() -> list[str]:
     return store.categories()
 
 
+_ROLES = {
+    # prefix: (URL validator, message when a URL is rejected)
+    "llm": (
+        llm.is_text_base_url,
+        "L'assistente testuale non può usare il servizio vision http://llama:8080.",
+    ),
+    "vision": (
+        llm.is_vision_base_url,
+        "Il modello vision non può usare il servizio testuale.",
+    ),
+}
+
+
+def _role_config(prefix: str) -> llm.LLMConfig:
+    config = llm.LLMConfig.from_store(store.get_config(), prefix=prefix)
+    valid, _ = _ROLES[prefix]
+    # Ignore providers pointing at the other role's dedicated service.
+    config.providers = [p for p in config.providers if valid(p.base_url)]
+    return config
+
+
+def _save_role(prefix: str, payload: dict) -> dict:
+    """Validate and persist one role's provider chain from the settings form.
+
+    Providers are saved in the given order, which defines their priority. A
+    blank ``api_key`` keeps the key already stored for that provider id (the
+    key is never sent back to the browser); ``clear_api_key`` removes it.
+    """
+    valid, message = _ROLES[prefix]
+    current = llm.LLMConfig.from_store(store.get_config(), prefix=prefix)
+    items = payload.get("providers")
+    if not isinstance(items, list):
+        raise HTTPException(status_code=422, detail="Elenco dei provider non valido.")
+
+    providers: list[llm.Provider] = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=422, detail="Provider non valido.")
+        provider = llm.Provider.from_dict({**item, "priority": index + 1})
+        if not provider.base_url and not provider.model:
+            continue  # blank row in the form
+        if not llm.is_valid_url(provider.base_url):
+            raise HTTPException(
+                status_code=422,
+                detail=f"URL non valido per «{provider.label}»: usa http:// o https://.",
+            )
+        if not valid(provider.base_url):
+            raise HTTPException(status_code=422, detail=message)
+        if not provider.model:
+            raise HTTPException(
+                status_code=422, detail=f"Indica il modello per «{provider.label}»."
+            )
+        previous = current.find(provider.id)
+        if not provider.api_key and previous and not item.get("clear_api_key"):
+            provider.api_key = previous.api_key
+        if provider.type == "ollama":
+            provider.api_key = ""
+        providers.append(provider)
+
+    config = llm.LLMConfig(
+        enabled=bool(payload.get("enabled")),
+        fallback=bool(payload.get("fallback", True)),
+        temperature=max(0.0, min(2.0, llm._parse_float(payload.get("temperature"), 0.3))),
+        providers=providers,
+    )
+    if config.enabled and not config.chain:
+        raise HTTPException(
+            status_code=422, detail="Aggiungi almeno un provider attivo con URL e modello."
+        )
+    store.set_config(config.to_store_values(prefix))
+    return _role_config(prefix).to_public_dict()
+
+
 @app.get("/api/config")
 async def get_config() -> dict:
-    """Return the current LLM connection settings for the configuration form."""
-    config = llm.LLMConfig.from_store(store.get_config())
-    public = config.to_public_dict()
-    if public["enabled"] and not llm.is_text_base_url(config.base_url):
-        public.update({"enabled": False, "base_url": "", "api_key": "", "model": ""})
-    return public
+    """Text-assistant settings (provider chain) for the configuration form."""
+    return _role_config("llm").to_public_dict()
 
 
 @app.get("/api/vision-config")
 async def get_vision_config() -> dict:
-    """Return the independent vision-model settings."""
-    config = llm.LLMConfig.from_store(store.get_config(), prefix="vision")
-    return config.to_public_dict()
+    """Vision-model settings (provider chain), independent from the text assistant."""
+    return _role_config("vision").to_public_dict()
 
 
 @app.put("/api/config")
 async def update_config(payload: dict = Body(...)) -> dict:
-    """Persist the LLM connection settings entered in the configuration mask."""
-    base_url = str(payload.get("base_url") or "").strip()
-    if payload.get("enabled") and base_url and not llm.is_text_base_url(base_url):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Imposta un runtime testuale locale distinto da http://llama:8080 "
-                "(ad esempio host.docker.internal o un IP privato della rete)."
-            ),
-        )
-    values = {
-        "llm_enabled": "true" if payload.get("enabled") else "false",
-        "llm_base_url": base_url,
-        "llm_api_key": "",
-        "llm_model": str(payload.get("model") or "").strip(),
-        "llm_temperature": str(payload.get("temperature", 0.3)),
-    }
-    store.set_config(values)
-    return llm.LLMConfig.from_store(store.get_config()).to_public_dict()
+    """Persist the text-assistant provider chain entered in the settings mask."""
+    return _save_role("llm", payload)
 
 
 @app.put("/api/vision-config")
 async def update_vision_config(payload: dict = Body(...)) -> dict:
-    """Persist vision runtime settings independently from the text assistant."""
-    base_url = str(payload.get("base_url") or "").strip()
-    if payload.get("enabled") and base_url and not llm.is_vision_base_url(base_url):
-        raise HTTPException(
-            status_code=422,
-            detail="Configura un endpoint locale per il modello vision.",
-        )
-    values = {
-        "vision_enabled": "true" if payload.get("enabled") else "false",
-        "vision_base_url": base_url,
-        "vision_api_key": "",
-        "vision_model": str(payload.get("model") or "").strip(),
-        "vision_temperature": str(payload.get("temperature", 0.3)),
-    }
-    store.set_config(values)
-    return llm.LLMConfig.from_store(store.get_config(), prefix="vision").to_public_dict()
+    """Persist the vision provider chain independently from the text assistant."""
+    return _save_role("vision", payload)
+
+
+@app.post("/api/llm/test")
+async def test_llm_provider(payload: dict = Body(...)) -> dict:
+    """Check one provider from the settings form (reachability + model availability).
+
+    A blank API key falls back to the key stored for that provider id, so a
+    saved provider can be tested without re-typing it.
+    """
+    role = str(payload.get("role") or "llm")
+    if role not in _ROLES:
+        raise HTTPException(status_code=422, detail="Ruolo non valido.")
+    item = payload.get("provider")
+    if not isinstance(item, dict):
+        raise HTTPException(status_code=422, detail="Provider non valido.")
+    provider = llm.Provider.from_dict(item)
+    if not provider.api_key:
+        stored = llm.LLMConfig.from_store(store.get_config(), prefix=role).find(provider.id)
+        if stored:
+            provider.api_key = stored.api_key
+    return await run_in_threadpool(llm.test_provider, provider)
 
 
 @app.get("/api/jobs")
@@ -267,6 +369,9 @@ async def get_job(job_id: str) -> dict:
 
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str) -> dict:
+    job = store.get(job_id)
+    if job is not None and job.is_running:
+        worker.cancel(job)  # stop the worker from processing a deleted job
     if not store.delete(job_id):
         raise HTTPException(status_code=404, detail="Job non trovato.")
     return {"deleted": job_id}
@@ -360,12 +465,7 @@ async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
     if not job.segments:
         raise HTTPException(status_code=409, detail="Trascrizione non ancora disponibile.")
 
-    config = llm.LLMConfig.from_store(store.get_config())
-    if not llm.is_text_base_url(config.base_url):
-        raise HTTPException(
-            status_code=409,
-            detail="Configura un modello testuale locale distinto dal modello vision.",
-        )
+    config = _role_config("llm")
     if not config.is_ready:
         raise HTTPException(
             status_code=409,
@@ -392,31 +492,39 @@ async def ask_job(job_id: str, payload: dict = Body(...)) -> StreamingResponse:
 
     # Open (and validate) the connection before streaming, so config/connection
     # errors become a proper HTTP error instead of a broken stream.
+    # Providers are tried in priority order until one accepts the request.
     try:
-        resp = await run_in_threadpool(
+        stream = await run_in_threadpool(
             llm.open_stream, config, messages, read_timeout=settings.llm_request_timeout
         )
     except llm.LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    provider = stream.provider.label
 
     def generate():
         parts: list[str] = []
         try:
-            for piece in llm.iter_stream(resp):
+            for piece in llm.iter_stream(stream):
                 parts.append(piece)
                 yield piece
         finally:
             answer = "".join(parts).strip()
             if answer:  # persist only a non-empty exchange
                 job.ai_messages.append(
-                    {"prompt": prompt, "answer": answer, "created_at": now()}
+                    {"prompt": prompt, "answer": answer, "created_at": now(),
+                     "provider": provider}
                 )
                 store.save(job)
 
     return StreamingResponse(
         generate(),
         media_type="text/plain; charset=utf-8",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            # Percent-encoded: header values must be latin-1.
+            "X-LLM-Provider": quote(provider),
+        },
     )
 
 
@@ -428,18 +536,21 @@ async def describe_scenes(job_id: str, payload: dict = Body(default={})) -> dict
         raise HTTPException(status_code=404, detail="Job non trovato.")
     if job.status != "completed":
         raise HTTPException(status_code=409, detail="Attendi il completamento della trascrizione.")
-    if not job.has_video or not job.source_path:
-        raise HTTPException(status_code=409, detail="Questo job non contiene un video analizzabile.")
+    if not job.has_video:
+        raise HTTPException(
+            status_code=409, detail="Questo job non contiene un video analizzabile."
+        )
+    if not job.source_path or not Path(job.source_path).is_file():
+        raise HTTPException(
+            status_code=409, detail="Il file video originale non è più disponibile."
+        )
     if job.visual_status in ("queued", "processing"):
         raise HTTPException(status_code=409, detail="Analisi visiva già in corso.")
-    config = llm.LLMConfig.from_store(store.get_config(), prefix="vision")
-    if not config.is_ready:
+    if not _role_config("vision").is_ready:
         raise HTTPException(
             status_code=409,
             detail="Configura il modello vision nella sezione dedicata delle impostazioni ⚙️.",
         )
-    if not llm.is_vision_base_url(config.base_url):
-        raise HTTPException(status_code=409, detail="Configura un runtime vision locale.")
     detail = str(payload.get("detail", "medium")).lower()
     if detail not in {"base", "medium", "advanced"}:
         raise HTTPException(status_code=422, detail="Livello di dettaglio non valido.")
@@ -450,6 +561,199 @@ async def describe_scenes(job_id: str, payload: dict = Body(default={})) -> dict
     store.save(job)
     worker.enqueue_scene_analysis(job.id)
     return job.public_dict()
+
+
+@app.get("/api/jobs/{job_id}/details")
+async def job_details(job_id: str) -> dict:
+    """Everything stored about a job, for the "details" card in the UI."""
+    job = _get_job(job_id)
+    source = Path(job.source_path) if job.source_path else None
+    media_available = bool(source and source.is_file())
+
+    per_speaker: dict[str, dict] = {}
+    words = 0
+    for seg in job.segments:
+        words += len(seg.text.split())
+        if not seg.speaker:
+            continue
+        info = per_speaker.setdefault(
+            seg.speaker,
+            {"label": seg.speaker, "name": job.speaker_names.get(seg.speaker),
+             "segments": 0, "seconds": 0.0},
+        )
+        info["segments"] += 1
+        info["seconds"] += max(0.0, seg.end - seg.start)
+
+    return {
+        "id": job.id,
+        "filename": job.filename,
+        "status": job.status.value,
+        "error": job.error,
+        "created_at": job.created_at,
+        "source": "youtube" if job.source_url else "upload",
+        "source_url": job.source_url,
+        "stored_file": source.name if source else None,
+        "file_size": store.media_size(job) if media_available else None,
+        "media_available": media_available,
+        "has_video": job.has_video,
+        "duration": job.duration,
+        "requested_language": job.requested_language,
+        "detected_language": job.detected_language,
+        "whisper_model": job.whisper_model,
+        "requested_model": job.requested_model or settings.whisper_model,
+        "requested_speakers": job.requested_speakers,
+        "speaker_count": job.speaker_count,
+        "speakers": [
+            {**info, "seconds": round(info["seconds"], 1)}
+            for info in (per_speaker[label] for label in job.speakers)
+        ],
+        "segment_count": len(job.segments),
+        "word_count": words,
+        "category": job.category,
+        "visual_status": job.visual_status,
+        "visual_detail": job.visual_detail,
+        "ai_message_count": len(job.ai_messages),
+    }
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(job_id: str) -> dict:
+    """Cancel a queued or running job (a speaker re-recognition keeps the transcript)."""
+    job = _get_job(job_id)
+    if not job.is_running:
+        raise HTTPException(status_code=409, detail="Il job non è in coda né in elaborazione.")
+    worker.cancel(job)
+    return job.public_dict()
+
+
+@app.post("/api/jobs/{job_id}/retry")
+async def retry_job(job_id: str, payload: dict = Body(default={})) -> dict:
+    """Resume a cancelled or failed job, optionally with a different Whisper model."""
+    job = _get_job(job_id)
+    if job.status not in (JobStatus.CANCELLED, JobStatus.FAILED):
+        raise HTTPException(status_code=409, detail="Solo i job annullati o falliti si riprendono.")
+    has_source = bool(job.source_path and Path(job.source_path).is_file())
+    if not has_source and not job.source_url:
+        raise HTTPException(status_code=409, detail="Il file sorgente non è più disponibile.")
+    if not has_source:
+        job.source_path = ""  # YouTube job: download again
+    if "whisper_model" in payload:
+        job.requested_model = _normalize_model(payload.get("whisper_model"))
+    worker.resubmit(job)
+    return job.public_dict()
+
+
+@app.post("/api/jobs/{job_id}/rediarize")
+async def rediarize_job(job_id: str, payload: dict = Body(default={})) -> dict:
+    """Re-run speaker recognition, e.g. with a forced number of speakers.
+
+    Useful when two people were merged into one voice: the transcript text is
+    kept, only the speaker attribution is recomputed (custom names are reset).
+    """
+    job = _get_job(job_id)
+    _require_editable(job)
+    if not job.source_path or not Path(job.source_path).is_file():
+        raise HTTPException(status_code=409, detail="Il file sorgente non è più disponibile.")
+    if job.visual_status in ("queued", "processing"):
+        raise HTTPException(status_code=409, detail="Attendi la fine dell'analisi delle scene.")
+    speakers, _ = _normalize_options(payload.get("num_speakers"), None)
+    job.requested_speakers = speakers
+    worker.resubmit(job, task="diarize")
+    return job.public_dict()
+
+
+@app.post("/api/jobs/{job_id}/speakers/merge")
+async def merge_speakers(job_id: str, payload: dict = Body(...)) -> dict:
+    """Merge voice ``source`` into ``target`` (same person detected as two voices)."""
+    job = _get_job(job_id)
+    _require_editable(job)
+    source = str(payload.get("source") or "")
+    target = str(payload.get("target") or "")
+    present = set(job.speakers)
+    if source not in present or target not in present or source == target:
+        raise HTTPException(status_code=422, detail="Scegli due parlanti diversi esistenti.")
+    for seg in job.segments:
+        if seg.speaker == source:
+            seg.speaker = target
+    _after_speaker_change(job)
+    store.save(job)
+    return job.public_dict()
+
+
+@app.patch("/api/jobs/{job_id}/segments")
+async def edit_segments(job_id: str, payload: dict = Body(...)) -> dict:
+    """Apply inline transcript edits.
+
+    Body: ``{"edits": [{"index": 3, "text": "...", "speaker": "SPEAKER 2"}, ...]}``.
+    ``text`` replaces the segment text (empty text deletes the segment);
+    ``speaker`` reassigns it to an existing voice or to a new ``SPEAKER N`` label
+    (two people detected as one voice).
+    """
+    job = _get_job(job_id)
+    _require_editable(job)
+    edits = payload.get("edits")
+    if not isinstance(edits, list):
+        raise HTTPException(status_code=422, detail="Formato delle modifiche non valido.")
+
+    speakers_before = list(job.speakers)
+    removed: set[int] = set()
+    for edit in edits:
+        if not isinstance(edit, dict):
+            raise HTTPException(status_code=422, detail="Formato delle modifiche non valido.")
+        try:
+            index = int(edit.get("index"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Indice di segmento non valido.") from None
+        if not 0 <= index < len(job.segments):
+            raise HTTPException(status_code=422, detail="Indice di segmento non valido.")
+        seg = job.segments[index]
+        if "text" in edit:
+            text = " ".join(str(edit.get("text") or "").split())
+            if not text:
+                removed.add(index)
+            elif text != seg.text:
+                seg.text = text
+                seg.words = []  # word timings no longer match the edited text
+        if edit.get("speaker"):
+            speaker = str(edit["speaker"]).strip()
+            if speaker not in speakers_before and not _SPEAKER_LABEL.match(speaker):
+                raise HTTPException(status_code=422, detail=f"Parlante non valido: {speaker}")
+            seg.speaker = speaker
+
+    if removed:
+        job.segments = [s for i, s in enumerate(job.segments) if i not in removed]
+    if job.speakers != speakers_before:
+        _after_speaker_change(job)
+    store.save(job)
+    return job.public_dict()
+
+
+@app.get("/api/retention")
+async def get_retention() -> dict:
+    """Retention policy plus current disk usage of the stored media."""
+    return {**store.retention(), "uploads_bytes": store.uploads_usage()}
+
+
+@app.put("/api/retention")
+async def update_retention(payload: dict = Body(...)) -> dict:
+    values = {}
+    for key in ("media_days", "job_days"):
+        try:
+            days = int(payload.get(key) or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Numero di giorni non valido.") from None
+        if days < 0:
+            raise HTTPException(status_code=422, detail="Numero di giorni non valido.")
+        values[f"retention_{key}"] = str(days)
+    store.set_config(values)
+    return {**store.retention(), "uploads_bytes": store.uploads_usage()}
+
+
+@app.post("/api/retention/cleanup")
+async def run_cleanup() -> dict:
+    """Apply the retention policy now."""
+    result = await run_in_threadpool(store.cleanup)
+    return {**result, **store.retention(), "uploads_bytes": store.uploads_usage()}
 
 
 @app.get("/api/jobs/{job_id}/download/{fmt}")

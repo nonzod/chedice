@@ -17,9 +17,14 @@
         <p class="tagline">Trascrizione video con riconoscimento dei parlanti</p>
       </div>
     </div>
-    <button id="settingsBtn" class="settings-btn" title="Impostazioni" aria-label="Impostazioni">⚙️</button>
+    <nav class="topnav">
+      <button id="navTranscribe" class="nav-btn active" type="button">🎙️ Trascrivi</button>
+      <button id="navArchive" class="nav-btn" type="button">🗂️ Archivio</button>
+      <button id="settingsBtn" class="settings-btn" title="Impostazioni" aria-label="Impostazioni">⚙️</button>
+    </nav>
   </header>
 
+  <div id="transcribeView">
   <main class="layout">
     <!-- Left: upload + options -->
     <section class="panel upload-panel">
@@ -60,6 +65,11 @@
             <option value="6">6</option>
           </select>
         </label>
+
+        <label class="field field-wide">
+          <span>Modello Whisper</span>
+          <select id="whisperModel"></select>
+        </label>
       </div>
 
       <label class="field">
@@ -79,8 +89,9 @@
       </label>
       <button id="ytBtn" class="btn-secondary">▶️ Trascrivi da YouTube</button>
 
-      <p class="hint">Il modello <strong>large-v3</strong> gira sulla tua GPU. Il primo
-        avvio scarica i modelli (qualche minuto), poi tutto resta in cache. Usa i video
+      <p class="hint">Il modello Whisper scelto gira sulla tua GPU: i modelli più piccoli
+        sono più veloci, <strong>large-v3</strong> è il più preciso. Il primo uso di un
+        modello lo scarica (qualche minuto), poi resta in cache. Usa i video
         YouTube solo se ne hai i diritti.</p>
     </section>
 
@@ -97,11 +108,14 @@
             <h2 id="jobTitle"></h2>
             <div id="jobMeta" class="job-meta"></div>
           </div>
-          <div id="downloads" class="downloads hidden">
-            <a class="dl" data-fmt="txt">TXT</a>
-            <a class="dl" data-fmt="srt">SRT</a>
-            <a class="dl" data-fmt="vtt">VTT</a>
-            <a class="dl" data-fmt="json">JSON</a>
+          <div class="job-actions">
+            <button id="jobDetailsBtn" class="dl" type="button" title="Dettagli registrazione">ℹ️ Dettagli</button>
+            <div id="downloads" class="downloads hidden">
+              <a class="dl" data-fmt="txt">TXT</a>
+              <a class="dl" data-fmt="srt">SRT</a>
+              <a class="dl" data-fmt="vtt">VTT</a>
+              <a class="dl" data-fmt="json">JSON</a>
+            </div>
           </div>
         </div>
 
@@ -114,8 +128,21 @@
 
         <div id="progressWrap" class="progress-wrap">
           <div class="progress-track"><div id="progressBar" class="progress-bar"></div></div>
-          <p id="stageLabel" class="stage-label"></p>
+          <div class="progress-foot">
+            <p id="stageLabel" class="stage-label"></p>
+            <button id="cancelJobBtn" type="button" class="btn-ghost">✕ Annulla</button>
+          </div>
         </div>
+
+        <div id="resumeBox" class="resume-box hidden">
+          <span id="resumeText"></span>
+          <label class="visual-detail-field">Modello
+            <select id="retryModel"></select>
+          </label>
+          <button id="retryJobBtn" type="button" class="ce-save">↻ Riprendi</button>
+        </div>
+
+        <p id="jobWarning" class="job-warning hidden"></p>
 
         <div id="speakerEditor" class="speaker-editor hidden">
           <div class="se-head">
@@ -123,6 +150,34 @@
             <button id="saveNamesBtn" class="se-save">Salva nomi</button>
           </div>
           <div id="speakerFields" class="speaker-fields"></div>
+
+          <details id="speakerFix" class="speaker-fix">
+            <summary>🩺 Voci riconosciute male?</summary>
+            <div class="fix-row">
+              <span class="fix-label">Stessa persona su due voci:</span>
+              <select id="mergeSource"></select>
+              <span>è la stessa persona di</span>
+              <select id="mergeTarget"></select>
+              <button id="mergeBtn" type="button" class="ce-save">Unisci</button>
+            </div>
+            <div class="fix-row">
+              <span class="fix-label">Persone diverse sulla stessa voce:</span>
+              <span>ricalcola i parlanti con</span>
+              <select id="rediarizeCount">
+                <option value="0">numero automatico</option>
+                <option value="1">1 parlante</option>
+                <option value="2">2 parlanti</option>
+                <option value="3">3 parlanti</option>
+                <option value="4">4 parlanti</option>
+                <option value="5">5 parlanti</option>
+                <option value="6">6 parlanti</option>
+              </select>
+              <button id="rediarizeBtn" type="button" class="ce-save">Ricalcola</button>
+            </div>
+            <p class="fix-hint">Puoi anche assegnare a mano il parlante di ogni frase con
+              <strong>✏️ Modifica testo</strong> (anche a un nuovo parlante). Ricalcolare
+              azzera i nomi personalizzati e le assegnazioni manuali.</p>
+          </details>
         </div>
 
         <section id="visualPanel" class="visual-panel hidden">
@@ -149,6 +204,12 @@
           <div id="visualDescription" class="visual-description hidden"></div>
         </section>
 
+        <div id="transcriptToolbar" class="transcript-toolbar hidden">
+          <button id="editTranscriptBtn" type="button" class="btn-ghost">✏️ Modifica testo</button>
+          <span id="editStatus" class="settings-status"></span>
+          <button id="cancelEditBtn" type="button" class="btn-ghost hidden">Annulla</button>
+          <button id="saveEditBtn" type="button" class="ce-save hidden">Salva modifiche</button>
+        </div>
         <div id="transcript" class="transcript"></div>
 
         <div id="aiPanel" class="ai-panel hidden">
@@ -178,73 +239,125 @@
     <h3>Recenti</h3>
     <ul id="historyList" class="history-list"></ul>
   </aside>
+  </div>
+
+  <!-- Archive: recordings grouped by category -->
+  <main id="archiveView" class="archive hidden">
+    <div class="archive-head">
+      <div>
+        <nav id="archiveCrumbs" class="crumbs"></nav>
+        <p id="archiveSummary" class="archive-summary"></p>
+      </div>
+      <input id="archiveSearch" class="archive-search" type="search"
+             placeholder="Cerca per titolo…" autocomplete="off" />
+    </div>
+    <div id="archiveGrid" class="archive-grid"></div>
+    <div id="archiveEmpty" class="empty-state archive-empty hidden">
+      <div class="empty-icon">🗂️</div>
+      <p>Nessuna registrazione completata in archivio.</p>
+    </div>
+  </main>
+
+  <!-- Recording details -->
+  <div id="detailsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="detailsTitle">
+    <div class="modal-card details-card">
+      <div class="modal-head">
+        <h2 id="detailsTitle">Dettagli</h2>
+        <button id="detailsClose" class="modal-close" aria-label="Chiudi">✕</button>
+      </div>
+      <div id="detailsBody" class="details-body"></div>
+      <div class="modal-actions">
+        <button id="detailsOpenBtn" class="btn-primary" type="button">Apri trascrizione</button>
+      </div>
+    </div>
+  </div>
 
   <!-- Settings modal: LLM configuration -->
   <div id="settingsModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
     <div class="modal-card">
       <div class="modal-head">
-        <h2 id="settingsTitle">⚙️ Impostazioni LLM</h2>
+        <h2 id="settingsTitle">⚙️ Impostazioni</h2>
         <button id="settingsClose" class="modal-close" aria-label="Chiudi">✕</button>
       </div>
-      <p class="modal-sub">Configura separatamente il modello testuale per domande e prompt e il modello vision per le scene.</p>
+      <p class="modal-sub">Configura separatamente il modello testuale per domande e prompt e il
+        modello vision per le scene. Per ciascuno puoi aggiungere più provider — <strong>Ollama</strong>
+        o qualsiasi <strong>API OpenAI-compatibile</strong> (OpenAI, OpenRouter, llama.cpp, vLLM,
+        LM Studio…) — in ordine di priorità: se il primo non risponde viene usato il successivo.</p>
 
-      <section class="settings-section">
+      <section class="settings-section" data-role="llm">
         <h3>💬 Assistente testuale</h3>
-        <p>Usato per domande sulla trascrizione e prompt. Inserisci l'URL del runtime testuale locale
-          (es. <code>http://host.docker.internal:8081</code> o un IP privato); è distinto da llama:8080,
-          riservato al modello vision.</p>
-        <label class="switch-field">
-          <input id="llmEnabled" type="checkbox" />
-          <span>Abilita assistente testuale</span>
-        </label>
-
-        <label class="field">
-          <span>URL runtime testuale</span>
-          <input id="llmBaseUrl" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="http://localhost:8080" />
-        </label>
-
-        <label class="field">
-          <span>Modello testuale</span>
-          <input id="llmModel" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="Nome del modello testuale caricato" />
-        </label>
-
-        <label class="field">
+        <p>Usato per domande sulla trascrizione e prompt. Non può usare il servizio vision
+          <code>http://llama:8080</code>. Con un provider remoto la trascrizione viene inviata a
+          quel servizio.</p>
+        <div class="role-switches">
+          <label class="switch-field">
+            <input id="llmEnabled" type="checkbox" />
+            <span>Abilita assistente testuale</span>
+          </label>
+          <label class="switch-field">
+            <input id="llmFallback" type="checkbox" checked />
+            <span>Se un provider non risponde, usa il successivo in ordine di priorità</span>
+          </label>
+        </div>
+        <div id="llmProviders" class="provider-list"></div>
+        <button id="llmAddProvider" type="button" class="btn-ghost add-provider">＋ Aggiungi provider</button>
+        <label class="field field-temp">
           <span>Temperatura</span>
           <input id="llmTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
         </label>
-
         <div class="modal-actions">
           <span id="settingsStatus" class="settings-status"></span>
           <button id="settingsSave" class="btn-primary">Salva assistente testuale</button>
         </div>
       </section>
 
-      <section class="settings-section">
+      <section class="settings-section" data-role="vision">
         <h3>🎞️ Analisi visiva</h3>
-        <p>Usata solo per descrivere i fotogrammi. Runtime llama.cpp dedicato, modello Qwen3-VL 2B.</p>
-        <label class="switch-field">
-          <input id="visionEnabled" type="checkbox" />
-          <span>Abilita analisi visiva</span>
-        </label>
-        <label class="field">
-          <span>URL runtime vision</span>
-          <input id="visionBaseUrl" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="http://llama:8080" />
-        </label>
-        <label class="field">
-          <span>Modello vision</span>
-          <input id="visionModel" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="Qwen3-VL-2B-Instruct-GGUF:Q4_K_M" />
-        </label>
-        <label class="field">
+        <p>Usata solo per descrivere i fotogrammi; serve un modello multimodale (es. Qwen3-VL sul
+          runtime llama.cpp dedicato <code>http://llama:8080</code>, oppure un modello vision su
+          Ollama o su un'API OpenAI-compatibile). Con un provider remoto i fotogrammi vengono
+          inviati a quel servizio.</p>
+        <div class="role-switches">
+          <label class="switch-field">
+            <input id="visionEnabled" type="checkbox" />
+            <span>Abilita analisi visiva</span>
+          </label>
+          <label class="switch-field">
+            <input id="visionFallback" type="checkbox" checked />
+            <span>Se un provider non risponde, usa il successivo in ordine di priorità</span>
+          </label>
+        </div>
+        <div id="visionProviders" class="provider-list"></div>
+        <button id="visionAddProvider" type="button" class="btn-ghost add-provider">＋ Aggiungi provider</button>
+        <label class="field field-temp">
           <span>Temperatura vision</span>
           <input id="visionTemperature" type="number" min="0" max="2" step="0.1" value="0.3" />
         </label>
         <div class="modal-actions">
           <span id="visionSettingsStatus" class="settings-status"></span>
           <button id="visionSettingsSave" class="btn-primary">Salva modello vision</button>
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3>🧹 Pulizia automatica</h3>
+        <p>Libera spazio sul disco eliminando i job conclusi più vecchi di N giorni
+          (0 = mai). Eliminando solo il file originale la trascrizione resta in archivio,
+          ma non saranno più disponibili campioni voce, analisi scene e ricalcolo parlanti.
+          La pulizia viene eseguita ogni ora.</p>
+        <label class="field">
+          <span>Elimina il file originale dopo (giorni)</span>
+          <input id="retentionMedia" type="number" min="0" step="1" value="0" />
+        </label>
+        <label class="field">
+          <span>Elimina l'intero job dopo (giorni)</span>
+          <input id="retentionJobs" type="number" min="0" step="1" value="0" />
+        </label>
+        <p id="retentionUsage" class="settings-usage"></p>
+        <div class="modal-actions">
+          <span id="retentionStatus" class="settings-status"></span>
+          <button id="cleanupNowBtn" class="btn-secondary btn-inline" type="button">Pulisci ora</button>
+          <button id="retentionSave" class="btn-primary" type="button">Salva</button>
         </div>
       </section>
     </div>

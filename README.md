@@ -4,7 +4,8 @@ Applicazione web per la **trascrizione di video** con **riconoscimento dei parla
 (speaker diarization), accelerata su **GPU NVIDIA** e pronta per Docker.
 
 - **Speech-to-text**: [faster-whisper](https://github.com/SYSTRAN/faster-whisper) con
-  modello `large-v3` e rilevamento automatico della lingua.
+  modello `large-v3` (o un altro scelto dall'interfaccia), timestamp per parola e
+  rilevamento automatico della lingua.
 - **Riconoscimento parlanti senza token**: embedding vocali
   [ECAPA-TDNN](https://huggingface.co/speechbrain/spkrec-ecapa-voxceleb) (SpeechBrain,
   modello non-gated) + clustering per coseno. Nessun account HuggingFace richiesto.
@@ -18,10 +19,16 @@ Applicazione web per la **trascrizione di video** con **riconoscimento dei parla
   ambientazione, soggetti e azioni con un modello vision locale.
 - **Categorie**: assegna una **categoria** a ogni trascrizione per raggrupparle e
   ritrovarle facilmente (con autocompletamento delle categorie già usate).
-- **Cronologia e archivio**: pannello "Recenti" con stato live dei job, riapertura e
-  cancellazione; le trascrizioni completate restano archiviate nel database.
-- **Assistente AI locale (opzionale)**: configura il modello dalle impostazioni ⚙️ per fare
-  domande sul testo, chiedere riassunti e descrivere le scene senza inviare contenuti a servizi remoti.
+- **Cronologia e archivio**: pannello "Recenti" con stato live dei job, annullamento,
+  ripresa, riapertura e cancellazione; pagina **🗂️ Archivio** con le registrazioni
+  raggruppate in card per categoria e una **scheda dettagli** per ogni registrazione.
+- **Correzioni**: modifica inline del testo trascritto, riassegnazione del parlante frase
+  per frase, unione di due voci della stessa persona e ricalcolo dei parlanti.
+- **Pulizia automatica**: retention configurabile dei file originali e dei job vecchi.
+- **Assistente AI (opzionale)**: configura dalle impostazioni ⚙️ uno o più provider —
+  **Ollama** o qualsiasi **API OpenAI-compatibile** (OpenAI, OpenRouter, llama.cpp, vLLM,
+  LM Studio…) — in ordine di priorità, con **fallback automatico** al successivo se uno non
+  risponde. Serve per domande sul testo, riassunti e descrizione delle scene.
 - **UI web**: interfaccia leggera senza build step (HTML/CSS/JS vanilla), drag & drop,
   progresso in tempo reale e anteprima colorata per parlante.
 
@@ -64,7 +71,10 @@ Al primo avvio llama.cpp scarica il modello vision quantizzato Qwen3-VL 2B nel v
 2. **Trascrizione** — faster-whisper produce segmenti con timestamp (VAD attivo;
    se il VAD rimuove tutto l'audio, es. musica cantata, si ritenta senza VAD).
 3. **Diarization** — finestre scorrevoli sulle regioni parlate → embedding ECAPA →
-   clustering per coseno → ogni segmento è attribuito al parlante prevalente.
+   clustering per coseno → smoothing a maggioranza delle etichette delle finestre →
+   attribuzione **per parola** (grazie ai timestamp per parola di Whisper): i turni più
+   brevi di `APP_MIN_TURN_SECONDS` vengono assorbiti dai vicini e i segmenti sono spezzati
+   nei punti in cui cambia il parlante, anche a metà frase.
 4. **Esportazione** — TXT/SRT/VTT/JSON generati al volo al download, applicando gli
    eventuali nomi personalizzati dei parlanti.
 
@@ -84,8 +94,14 @@ Le più utili:
 | `APP_LANGUAGE` | *(auto)* | Forza una lingua (es. `it`). |
 | `APP_SPEAKER_SEPARATION` | `0.65` | Separazione coseno minima per accettare >1 parlante (auto). Alza il valore se una voce sola viene divisa in più parlanti. |
 | `APP_MAX_SPEAKERS` | `10` | Limite superiore di parlanti in modalità automatica. |
+| `APP_WHISPER_MODELS` | `tiny,…,large-v3` | Modelli selezionabili dall'interfaccia per singolo job. |
+| `APP_WINDOW_SECONDS` / `APP_HOP_SECONDS` | `2.0` / `1.0` | Finestre degli embedding: più corte = cambi di parlante più precisi ma embedding più rumorosi. |
+| `APP_SMOOTHING_RADIUS` | `1` | Smoothing a maggioranza sulle finestre vicine (0 = disattivo). |
+| `APP_MIN_TURN_SECONDS` | `0.8` | Durata minima di un turno dentro una frase (evita sfarfallii di una parola). |
+| `APP_MEDIA_RETENTION_DAYS` | `0` | Elimina il file originale dei job conclusi dopo N giorni (0 = mai); modificabile da ⚙️. |
+| `APP_JOB_RETENTION_DAYS` | `0` | Elimina interamente i job conclusi dopo N giorni (0 = mai); modificabile da ⚙️. |
 
-Dall'interfaccia puoi anche forzare la **lingua** e il **numero di parlanti** per singolo job
+Dall'interfaccia puoi anche scegliere il **modello Whisper**, forzare la **lingua** e il **numero di parlanti** per singolo job
 (consigliato se conosci quanti sono: migliora la precisione della diarization).
 
 ## Uso dell'interfaccia
@@ -102,24 +118,58 @@ Dall'interfaccia puoi anche forzare la **lingua** e il **numero di parlanti** pe
 - **Categorie**: assegna una categoria alla trascrizione (in fase di creazione o dopo,
   dal box 🏷️). Il campo suggerisce le categorie già in uso.
 - **Cronologia**: il pannello "Recenti" elenca i job con il loro stato; clicca per
-  riaprirli o usa ✕ per eliminarli (rimuove anche file sorgente e cache correlati).
+  riaprirli, ℹ️ per i dettagli o ✕ per eliminarli (rimuove anche file sorgente e cache).
+- **Annulla / riprendi**: un job in coda o in elaborazione si annulla con **✕ Annulla**;
+  un job annullato o fallito si riprende con **↻ Riprendi**, anche con un altro modello.
+- **Archivio**: la pagina 🗂️ mostra una card per categoria (numero di registrazioni, durata
+  totale, ultime voci); cliccando una categoria si vedono le sue registrazioni, con ricerca
+  per titolo, download e la **scheda dettagli** (data, durata, file, dimensione, lingua,
+  modello, parlanti con tempo di parola, stato delle analisi).
+- **Modifica testo**: ✏️ *Modifica testo* rende ogni frase modificabile e permette di
+  cambiarne il parlante; un testo vuoto elimina la frase.
+- **Voci riconosciute male**: nel box *🩺 Voci riconosciute male?* puoi **unire** due voci
+  che appartengono alla stessa persona, oppure **ricalcolare** i parlanti con un numero
+  forzato quando due persone sono finite sulla stessa voce (il testo resta invariato).
+- **Pulizia automatica**: in ⚙️ imposta dopo quanti giorni eliminare i file originali
+  (la trascrizione resta in archivio) e/o i job interi; la pulizia gira ogni ora o con
+  *Pulisci ora*.
 
 ### Modelli AI
 
-Le impostazioni ⚙️ tengono separati i due modelli e i relativi endpoint:
+Le impostazioni ⚙️ tengono separati i due ruoli, ognuno con la propria **catena di provider**:
 
-- **Assistente testuale** — usato solo per domande sulla trascrizione e prompt. Va configurato
-  con un proprio runtime locale compatibile; non usa il modello vision.
-- **Analisi visiva** — usa il runtime llama.cpp dedicato su `http://llama:8080` e
-  `Qwen3-VL-2B-Instruct-GGUF:Q4_K_M`.
+- **Assistente testuale** — domande sulla trascrizione e prompt. Non può usare il servizio
+  vision `http://llama:8080`.
+- **Analisi visiva** — descrizione dei fotogrammi; di default usa il runtime llama.cpp
+  dedicato `http://llama:8080` con `Qwen3-VL-2B-Instruct-GGUF:Q4_K_M`.
 
-Le due configurazioni si salvano separatamente nel database. Una vecchia configurazione
-che puntava Qwen3-VL come modello unico viene migrata automaticamente alla sezione vision.
+Per ciascun ruolo puoi aggiungere più provider, ognuno di tipo:
+
+| Tipo | Endpoint usato | Esempio di URL |
+|---|---|---|
+| **Ollama** | API nativa `/api/chat` (streaming NDJSON, immagini supportate) | `http://host.docker.internal:11434` |
+| **API OpenAI-compatibile** | `/chat/completions` (streaming SSE) con API key opzionale (`Authorization: Bearer`) | `https://api.openai.com/v1`, `https://openrouter.ai/api/v1`, `http://llama:8080` |
+
+L'ordine delle card (frecce ↑ ↓, badge `#1`, `#2`…) è la **priorità**. Con l'opzione
+*«Se un provider non risponde, usa il successivo in ordine di priorità»* attiva, una richiesta
+che fallisce (server irraggiungibile, errore HTTP, risposta vuota o — per le scene — incompleta)
+passa automaticamente al provider successivo; disattivandola viene usato solo il primo provider
+attivo. Ogni card ha il pulsante **🔌 Prova connessione**, che verifica raggiungibilità, API key e
+presenza del modello (e suggerisce i modelli disponibili). Le API key restano nel database e non
+vengono mai rimandate al browser: lasciando il campo vuoto la chiave salvata viene mantenuta.
+Nella cronologia dell'AI ogni risposta riporta il provider che l'ha generata.
+
+> ⚠️ Con un provider remoto (OpenAI, OpenRouter…) la trascrizione — o i fotogrammi, per
+> l'analisi visiva — vengono inviati a quel servizio. Per restare completamente in locale usa
+> solo Ollama/llama.cpp sulla tua macchina o rete.
+
+Le configurazioni precedenti (un solo endpoint per ruolo) vengono convertite automaticamente
+in un provider OpenAI-compatibile.
 
 Il download iniziale del modello richiede una connessione internet; elaborazione e richieste
 successive avvengono sul PC. Per le scene viene inviato al modello un massimo di otto
 fotogrammi ridimensionati. L'app mette la richiesta in coda con le trascrizioni e rilascia prima i
-modelli vocali dalla GPU. Gli endpoint remoti vengono rifiutati.
+modelli vocali dalla GPU.
 
 Nel pannello **Scene chiave** puoi scegliere il livello **Base**, **Medio** o **Avanzato**:
 regola la profondità della descrizione e il budget di generazione (768, 2048 o 4096 token).
@@ -157,8 +207,17 @@ uvicorn app.main:app --reload
 
 | Metodo & path | Descrizione |
 |---|---|
-| `POST /api/jobs` | Crea un job da un file caricato (multipart: `file`, `language`, `num_speakers`, `category`). |
-| `POST /api/jobs/youtube` | Crea un job da un link YouTube (JSON: `url`, `language`, `num_speakers`, `category`). |
+| `POST /api/jobs` | Crea un job da un file caricato (multipart: `file`, `language`, `num_speakers`, `category`, `whisper_model`). |
+| `POST /api/jobs/youtube` | Crea un job da un link YouTube (JSON: `url`, `language`, `num_speakers`, `category`, `whisper_model`). |
+| `GET /api/models` | Modelli Whisper selezionabili e modello predefinito. |
+| `GET /api/jobs/{id}/details` | Scheda dettagli di un job (file, dimensione, durata, modello, statistiche parlanti…). |
+| `POST /api/jobs/{id}/cancel` | Annulla un job in coda o in elaborazione. |
+| `POST /api/jobs/{id}/retry` | Riprende un job annullato o fallito (JSON opzionale: `whisper_model`). |
+| `PATCH /api/jobs/{id}/segments` | Modifica inline (JSON: `edits: [{index, text?, speaker?}]`; testo vuoto elimina la frase). |
+| `POST /api/jobs/{id}/speakers/merge` | Unisce due voci (JSON: `source`, `target`). |
+| `POST /api/jobs/{id}/rediarize` | Ricalcola i parlanti sul testo esistente (JSON: `num_speakers`, opzionale). |
+| `GET/PUT /api/retention` | Legge/aggiorna la retention (`media_days`, `job_days`) e lo spazio occupato. |
+| `POST /api/retention/cleanup` | Applica subito la pulizia. |
 | `GET /api/jobs` | Elenca i job (senza segmenti) per la cronologia. |
 | `GET /api/jobs/{id}` | Dettaglio di un job, inclusi trascrizione e Q&A AI. |
 | `DELETE /api/jobs/{id}` | Elimina un job e i file/cache correlati. |
@@ -169,9 +228,10 @@ uvicorn app.main:app --reload
 | `POST /api/jobs/{id}/ask` | Domanda/richiesta AI sul testo (JSON: `prompt`); risposta in streaming `text/plain`, salvata nel job a fine generazione. |
 | `GET /api/categories` | Categorie distinte già in uso (per l'autocompletamento). |
 | `GET /api/archive` | Trascrizioni completate (solo metadati) con i link di download. |
-| `GET /api/config` | Configurazione LLM corrente. |
-| `PUT /api/config` | Aggiorna la configurazione dell'assistente testuale. |
-| `GET/PUT /api/vision-config` | Legge e aggiorna la configurazione del modello vision. |
+| `GET /api/config` | Configurazione dell'assistente testuale (`enabled`, `fallback`, `temperature`, `providers`). |
+| `PUT /api/config` | Aggiorna l'assistente testuale; l'ordine di `providers` è la priorità. |
+| `GET/PUT /api/vision-config` | Legge e aggiorna la catena di provider del modello vision. |
+| `POST /api/llm/test` | Prova un provider (JSON: `role`, `provider`): raggiungibilità, API key, modello. |
 | `POST /api/jobs/{id}/describe-scenes` | Analizza le scene (`detail`: `base`, `medium` o `advanced`; predefinito `medium`). |
 
 ## Struttura
@@ -182,7 +242,7 @@ app/
   config.py          # impostazioni (env / .env)
   models.py          # Job e Segment
   jobs.py            # store persistente (SQLite) + worker in background + config app
-  llm.py             # client LLM locale per riassunti e Q&A
+  llm.py             # client LLM multi-provider (Ollama / OpenAI-compatibile) con fallback
   vision.py          # analisi di fotogrammi con llama.cpp locale
   utils.py           # helper condivisi (nomi file sicuri)
   pipeline/

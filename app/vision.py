@@ -1,4 +1,4 @@
-"""Local llama.cpp vision analysis for sampled video frames."""
+"""Vision analysis of sampled video frames (provider chain with fallback)."""
 
 from __future__ import annotations
 
@@ -17,11 +17,10 @@ def describe_video(
     timeout: int,
     detail: str = "medium",
 ) -> str:
-    """Extract representative frames and describe them with the local llama.cpp server."""
+    """Extract representative frames and describe them with the vision provider chain."""
+    config.providers = [p for p in config.providers if llm.is_vision_base_url(p.base_url)]
     if not config.is_ready:
-        raise llm.LLMError("Abilita il modello locale e configuralo nelle impostazioni ⚙️.")
-    if not llm.is_vision_base_url(config.base_url):
-        raise llm.LLMError("Configura l'endpoint locale dedicato al modello vision.")
+        raise llm.LLMError("Abilita il modello vision e configuralo nelle impostazioni ⚙️.")
 
     with tempfile.TemporaryDirectory(prefix="chedice-frames-") as temp_dir:
         frames = audio.extract_video_frames(source, Path(temp_dir), duration)

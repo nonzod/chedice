@@ -11,6 +11,23 @@ class JobStatus(str, Enum):
     PROCESSING = "processing"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+@dataclass
+class Word:
+    """A single recognized word with its own timing (from Whisper word timestamps)."""
+
+    start: float
+    end: float
+    text: str  # raw Whisper token text, usually with a leading space
+
+    def to_list(self) -> list:
+        return [round(self.start, 3), round(self.end, 3), self.text]
+
+    @classmethod
+    def from_list(cls, data: list) -> Word:
+        return cls(start=float(data[0]), end=float(data[1]), text=str(data[2]))
 
 
 @dataclass
@@ -21,9 +38,20 @@ class Segment:
     end: float
     text: str
     speaker: str | None = None
+    # Word-level timings, used to split a segment where the speaker changes.
+    # Dropped when the text is edited by hand (they would no longer match).
+    words: list[Word] = field(default_factory=list)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """Public representation (no word timings: they are an internal detail)."""
+        return {"start": self.start, "end": self.end, "text": self.text, "speaker": self.speaker}
+
+    def to_storage(self) -> dict:
+        """Persisted representation, including compact word timings."""
+        data = self.to_dict()
+        if self.words:
+            data["words"] = [w.to_list() for w in self.words]
+        return data
 
     @classmethod
     def from_dict(cls, data: dict) -> Segment:
@@ -32,6 +60,7 @@ class Segment:
             end=data["end"],
             text=data["text"],
             speaker=data.get("speaker"),
+            words=[Word.from_list(w) for w in data.get("words") or []],
         )
 
 
@@ -51,8 +80,14 @@ class Job:
 
     source_url: str | None = None  # set for YouTube jobs, downloaded by the worker
 
+    # What the worker must do while the job is queued/processing:
+    # "transcribe" (full pipeline) or "diarize" (re-run speaker recognition only).
+    task: str = "transcribe"
+
     requested_speakers: int | None = None  # None -> automatic
     requested_language: str | None = None  # None -> automatic
+    requested_model: str | None = None  # Whisper model; None -> server default
+    whisper_model: str | None = None  # model actually used for the transcript
 
     detected_language: str | None = None
     speaker_count: int | None = None
@@ -75,10 +110,25 @@ class Job:
 
     segments: list[Segment] = field(default_factory=list)
 
+    # ---- Helpers -------------------------------------------------------
+    @property
+    def is_running(self) -> bool:
+        return self.status in (JobStatus.QUEUED, JobStatus.PROCESSING)
+
+    @property
+    def speakers(self) -> list[str]:
+        """Canonical speaker labels in order of first appearance."""
+        seen: list[str] = []
+        for seg in self.segments:
+            if seg.speaker and seg.speaker not in seen:
+                seen.append(seg.speaker)
+        return seen
+
     # ---- Serialization -------------------------------------------------
     def to_dict(self) -> dict:
         data = asdict(self)
         data["status"] = self.status.value
+        data["segments"] = [s.to_storage() for s in self.segments]
         return data
 
     @classmethod
@@ -90,11 +140,14 @@ class Job:
             source_path=data["source_path"],
             created_at=data["created_at"],
             source_url=data.get("source_url"),
+            task=data.get("task") or "transcribe",
             status=JobStatus(data.get("status", "queued")),
             progress=data.get("progress", 0.0),
             stage=data.get("stage", "In coda"),
             requested_speakers=data.get("requested_speakers"),
             requested_language=data.get("requested_language"),
+            requested_model=data.get("requested_model"),
+            whisper_model=data.get("whisper_model"),
             detected_language=data.get("detected_language"),
             speaker_count=data.get("speaker_count"),
             duration=data.get("duration"),
@@ -118,10 +171,13 @@ class Job:
             "filename": self.filename,
             "source_url": self.source_url,
             "status": self.status.value,
+            "task": self.task,
             "progress": round(self.progress, 1),
             "stage": self.stage,
             "requested_speakers": self.requested_speakers,
             "requested_language": self.requested_language,
+            "requested_model": self.requested_model,
+            "whisper_model": self.whisper_model,
             "detected_language": self.detected_language,
             "speaker_count": self.speaker_count,
             "duration": self.duration,
